@@ -618,7 +618,7 @@ function VoiceQualityBanner({ availableVoices }) {
           Edge is free and already on your Windows PC.
         </div>
         <a
-          href="microsoft-edge:http://localhost:5173"
+          href="microsoft-edge:https://narrate-ai-gamma.vercel.app/"
           style={{
             display: "inline-block", marginTop: "8px",
             padding: "6px 14px", borderRadius: "8px",
