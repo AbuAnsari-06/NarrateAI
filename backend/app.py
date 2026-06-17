@@ -1,0 +1,292 @@
+import os
+import json
+import re
+from typing import List, Dict, Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from groq import Groq
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="NarrateAI API", description="AI-powered story analysis for multi-voice audiobooks")
+
+# Enable CORS for your frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://narrateai.vercel.app",
+        "*"  # For testing - restrict in production
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Request/Response Models ---
+class AnalyzeRequest(BaseModel):
+    text: str
+    apiKey: str  # User provides their own key
+
+class VoiceProfile(BaseModel):
+    pitch: float
+    rate: float
+
+class StoryLine(BaseModel):
+    speaker: str
+    text: str
+    emotion: str
+    isThought: bool = False
+    persona: str
+    voiceProfile: VoiceProfile
+
+class AnalyzeResponse(BaseModel):
+    lines: List[StoryLine]
+    characters: List[Dict[str, str]]
+
+# --- Constants (copied from your React app) ---
+SYSTEM_PROMPT = """You are an expert literary analyst and audiobook director. Your job is to parse story text and extract structured dialogue data for an AI-powered multi-voice audiobook engine called NarrateAI.
+
+RULES:
+- Break the story into individual lines/sentences — each becomes one audio unit.
+- For narration (non-dialogue), set speaker to "Narrator".
+- Identify ALL unique speaking characters accurately.
+- IF A CHARACTER IS THINKING (inner monologue, silent realization, or unspoken thoughts), set the "speaker" to that character (NOT "Narrator") and set "isThought" to true. For spoken dialogue or regular narrator text, set "isThought" to false.
+- Choose emotion from ONLY this list: neutral, happy, angry, sad, fearful, excited, surprised.
+- IMPORTANT: AVOID using "neutral" if there is any emotional undertone in the text — lean towards the active emotion (e.g. if a character is whispering in fear, use "fearful"; if welcoming, use "happy").
+- persona: 4-6 descriptive words about the character (e.g. "wise elderly masculine gruff calm" or "energetic young feminine high-pitched fast"). Capture gender, age, vocal traits, and personality to help the voice assignment engine.
+- voiceProfile pitch: between 0.6 and 1.8 (1.0 = normal, higher = lighter/higher voice).
+- voiceProfile rate: between 0.8 and 1.3 (1.0 = normal speed).
+- Make voice profiles VERY distinctly different between characters.
+- Return ONLY a valid JSON array. No explanation, no markdown fences, no preamble whatsoever.
+
+OUTPUT FORMAT:
+[
+  {
+    "speaker": "Narrator",
+    "text": "The old man walked slowly.",
+    "emotion": "neutral",
+    "isThought": false,
+    "persona": "calm measured eloquent narrative voice",
+    "voiceProfile": { "pitch": 1.0, "rate": 0.95 }
+  },
+  {
+    "speaker": "Gandalf",
+    "text": "You shall not pass!",
+    "emotion": "angry",
+    "isThought": false,
+    "persona": "wise elderly masculine commanding gruff",
+    "voiceProfile": { "pitch": 0.75, "rate": 0.9 }
+  },
+  {
+    "speaker": "Frodo",
+    "text": "How will we ever get past the gate?",
+    "emotion": "fearful",
+    "isThought": true,
+    "persona": "brave young hobbit anxious masculine",
+    "voiceProfile": { "pitch": 1.1, "rate": 1.05 }
+  }
+]"""
+
+# --- Helper Functions ---
+def clean_and_parse_json(raw_text: str) -> List[Dict]:
+    """Extract and parse JSON from LLM response"""
+    cleaned = raw_text.strip()
+    
+    # Strip markdown fences
+    cleaned = re.sub(r'```json|```', '', cleaned).strip()
+    
+    # Find first [ and last ] to extract JSON array
+    start_idx = cleaned.find('[')
+    end_idx = cleaned.rfind(']')
+    
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        cleaned = cleaned[start_idx:end_idx + 1]
+    
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        # Try to fix common issues
+        cleaned = re.sub(r',\s*}', '}', cleaned)
+        cleaned = re.sub(r',\s*]', ']', cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            raise ValueError(f"Failed to parse JSON: {e}")
+
+def deduplicate_speakers(parsed_lines: List[Dict]) -> List[Dict]:
+    """Fuzzy deduplicate speaker names"""
+    speakers = list(set(line['speaker'] for line in parsed_lines if line['speaker'] != 'Narrator'))
+    alias_map = {}
+    
+    for i in range(len(speakers)):
+        for j in range(i + 1, len(speakers)):
+            s1 = speakers[i].lower()
+            s2 = speakers[j].lower()
+            
+            words1 = [w for w in s1.split() if w not in ['mr', 'mrs', 'ms', 'lord', 'lady', 'sir']]
+            words2 = [w for w in s2.split() if w not in ['mr', 'mrs', 'ms', 'lord', 'lady', 'sir']]
+            
+            if s1 in s2 or s2 in s1:
+                primary = s1 if len(s1) <= len(s2) else s2
+                alias = s2 if len(s1) <= len(s2) else s1
+                alias_map[alias] = primary
+            elif any(w in words2 for w in words1 if len(w) > 2):
+                primary = s1 if len(s1) <= len(s2) else s2
+                alias = s2 if len(s1) <= len(s2) else s1
+                alias_map[alias] = primary
+    
+    result = []
+    for line in parsed_lines:
+        if line['speaker'] in alias_map:
+            line['speaker'] = alias_map[line['speaker']]
+        result.append(line)
+    
+    return result
+
+# --- Main Analysis Function ---
+async def analyze_story(text: str, api_key: str) -> Dict:
+    """Core story analysis using Groq with user-provided key"""
+    
+    # Initialize Groq client with user's key
+    client = Groq(api_key=api_key)
+    
+    # Try models in order
+    models = ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"]
+    last_error = None
+    
+    for model in models:
+        try:
+            # First attempt with original prompt
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Analyze this story:\n\n{text}"}
+                ],
+                temperature=0.4,
+                max_tokens=8192,
+            )
+            
+            raw_text = completion.choices[0].message.content
+            
+            # Try to parse JSON
+            try:
+                parsed = clean_and_parse_json(raw_text)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    parsed = [line for line in parsed if line.get('text', '').strip()]
+                    
+                    if len(parsed) > 0:
+                        parsed = deduplicate_speakers(parsed)
+                        
+                        char_map = {}
+                        for line in parsed:
+                            speaker = line.get('speaker', 'Narrator')
+                            if speaker not in char_map:
+                                char_map[speaker] = line.get('persona', '')
+                        
+                        characters = [{'speaker': k, 'persona': v} for k, v in char_map.items()]
+                        
+                        return {
+                            'lines': parsed,
+                            'characters': characters
+                        }
+            except (json.JSONDecodeError, ValueError) as parse_err:
+                print(f"Parse error with {model}: {parse_err}")
+                
+                # Retry with correction prompt
+                retry_completion = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": f"Analyze this story:\n\n{text}\n\nIMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes."}
+                    ],
+                    temperature=0.4,
+                    max_tokens=8192,
+                )
+                
+                retry_raw = retry_completion.choices[0].message.content
+                parsed = clean_and_parse_json(retry_raw)
+                
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    parsed = [line for line in parsed if line.get('text', '').strip()]
+                    parsed = deduplicate_speakers(parsed)
+                    
+                    char_map = {}
+                    for line in parsed:
+                        speaker = line.get('speaker', 'Narrator')
+                        if speaker not in char_map:
+                            char_map[speaker] = line.get('persona', '')
+                    
+                    characters = [{'speaker': k, 'persona': v} for k, v in char_map.items()]
+                    
+                    return {
+                        'lines': parsed,
+                        'characters': characters
+                    }
+                    
+        except Exception as e:
+            print(f"Model {model} failed: {e}")
+            last_error = e
+            
+            # Check for invalid API key
+            if "invalid_api_key" in str(e).lower() or "401" in str(e):
+                raise Exception("Invalid Groq API key. Please check your key at console.groq.com/keys")
+            continue
+    
+    raise Exception(f"All models failed: {last_error}")
+
+# --- API Endpoints ---
+@app.get("/")
+async def root():
+    return {"message": "NarrateAI API is running", "status": "healthy"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+@app.post("/analyze")
+async def analyze(request: AnalyzeRequest):
+    """
+    Analyze a story text using the user's Groq API key.
+    
+    Args:
+        request: JSON with 'text' (story) and 'apiKey' (user's Groq key)
+    
+    Returns:
+        JSON with 'lines' and 'characters'
+    """
+    if not request.text or len(request.text.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Story must be at least 10 characters long")
+    
+    if not request.apiKey or len(request.apiKey.strip()) < 20:
+        raise HTTPException(status_code=400, detail="Valid Groq API key is required")
+    
+    try:
+        result = await analyze_story(request.text, request.apiKey)
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        if "Invalid Groq API key" in error_msg:
+            raise HTTPException(status_code=401, detail=error_msg)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {error_msg}")
+
+@app.get("/voices")
+async def get_voice_instructions():
+    """Returns the emotion-to-voice-parameter mapping"""
+    return {
+        "neutral": {"pitch": 1.0, "rate": 1.0, "volume": 1.0},
+        "happy": {"pitch": 1.2, "rate": 1.1, "volume": 1.0},
+        "angry": {"pitch": 0.9, "rate": 1.2, "volume": 1.0},
+        "sad": {"pitch": 0.8, "rate": 0.75, "volume": 0.85},
+        "fearful": {"pitch": 1.2, "rate": 1.3, "volume": 0.9},
+        "excited": {"pitch": 1.3, "rate": 1.25, "volume": 1.0},
+        "surprised": {"pitch": 1.35, "rate": 1.15, "volume": 1.0}
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
