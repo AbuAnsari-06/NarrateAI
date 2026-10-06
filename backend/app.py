@@ -154,22 +154,31 @@ async def analyze_story(text: str, api_key: str) -> Dict:
     # Initialize Groq client with user's key
     client = Groq(api_key=api_key)
     
-    # Try models in order
-    models = ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"]
+    # Try models in order (current supported Groq models with fallbacks)
+    models = [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+    ]
     last_error = None
     
     for model in models:
         try:
             # First attempt with original prompt
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[
+            create_params = {
+                "model": model,
+                "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"Analyze this story:\n\n{text}"}
                 ],
-                temperature=0.4,
-                max_tokens=8192,
-            )
+                "temperature": 0.4,
+                "max_tokens": 8192,
+            }
+            if "gpt-oss" in model:
+                create_params["reasoning_format"] = "hidden"
+
+            completion = client.chat.completions.create(**create_params)
             
             raw_text = completion.choices[0].message.content
             
@@ -198,15 +207,19 @@ async def analyze_story(text: str, api_key: str) -> Dict:
                 print(f"Parse error with {model}: {parse_err}")
                 
                 # Retry with correction prompt
-                retry_completion = client.chat.completions.create(
-                    model=model,
-                    messages=[
+                retry_params = {
+                    "model": model,
+                    "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": f"Analyze this story:\n\n{text}\n\nIMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes."}
                     ],
-                    temperature=0.4,
-                    max_tokens=8192,
-                )
+                    "temperature": 0.4,
+                    "max_tokens": 8192,
+                }
+                if "gpt-oss" in model:
+                    retry_params["reasoning_format"] = "hidden"
+
+                retry_completion = client.chat.completions.create(**retry_params)
                 
                 retry_raw = retry_completion.choices[0].message.content
                 parsed = clean_and_parse_json(retry_raw)

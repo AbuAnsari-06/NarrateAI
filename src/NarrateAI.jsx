@@ -157,6 +157,10 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
     ],
   };
 
+  if (model.includes("gpt-oss")) {
+    body.reasoning_format = "hidden";
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000); // 30-second timeout
 
@@ -189,7 +193,12 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
 
 // ─── GROQ API CALL WITH MODEL FALLBACK & RETRIES ──────────────────────────────
 async function callGroq(apiKey, storyText) {
-  const models = ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"];
+  const models = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+  ];
   let lastError = null;
 
   for (const model of models) {
@@ -519,7 +528,7 @@ function ApiKeyPanel({ apiKey, onKeyChange }) {
       <label style={S.label}>
         🔑 Groq API Key
         <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: 0, color: "#6366f1", fontSize: "10px" }}>
-          Free at console.groq.com — Llama 3.3 70B
+          Free at console.groq.com — GPT-OSS 120B / 20B
         </span>
       </label>
       <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
@@ -557,7 +566,7 @@ function ApiKeyPanel({ apiKey, onKeyChange }) {
       )}
       {apiKey && (
         <div style={{ fontSize: "12px", color: "#22c55e", marginTop: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
-          ✓ Groq API key set — Llama 3.3 70B ready
+          ✓ Groq API key set — AI models ready
         </div>
       )}
     </div>
@@ -1455,7 +1464,7 @@ export default function NarrateAI() {
             background: "linear-gradient(135deg, #f97316, #ef4444)",
             color: "white", padding: "2px 8px", borderRadius: "20px",
             letterSpacing: "0.05em",
-          }}>GROQ · LLAMA 3.3</span>
+          }}>GROQ · GPT-OSS 120B</span>
         </div>
 
         {hasStory && (

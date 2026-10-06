@@ -23,7 +23,7 @@ Here's a professional, comprehensive README for your NarrateAI project:
 
 | Feature | Description |
 |---------|-------------|
-| 🤖 **AI-Powered Analysis** | Uses Groq's Llama 3.3 70B to identify characters, emotions, and voice profiles |
+| 🤖 **AI-Powered Analysis** | Uses Groq's ultra-fast models (GPT-OSS 120B / 20B) to identify characters, emotions, and voice profiles |
 | 🎭 **Distinct Character Voices** | Each character gets a unique voice based on their persona (gender, age, personality) |
 | 😊 **Emotion-Driven Speech** | Pitch, rate, and volume adjust based on character emotions (happy, sad, angry, fearful, etc.) |
 | ⏯️ **Full Playback Controls** | Play, pause, stop, skip forward/backward, and adjustable speed (0.75× to 1.5×) |
@@ -60,7 +60,7 @@ Here's a professional, comprehensive README for your NarrateAI project:
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Groq API                               │
 │  ┌───────────────────────────────────────────────────────────┐ │
-│  │              Llama 3.3 70B (or fallback models)          │ │
+│  │              GPT-OSS 120B / 20B (with fallbacks)         │ │
 │  │   ┌───────────────────────────────────────────────────┐  │ │
 │  │   │  Analyzes story → Identifies → Returns JSON      │  │ │
 │  │   │  • Characters      • Emotions   • Voice profiles │  │ │
@@ -87,7 +87,7 @@ Here's a professional, comprehensive README for your NarrateAI project:
 - **React 19** – UI framework
 - **Vite** – Build tool and dev server
 - **Web Speech API** – Browser-based text-to-speech
-- **Groq API** – AI analysis (Llama 3.3 70B)
+- **Groq API** – AI analysis (OpenAI GPT-OSS 120B / 20B)
 
 ### Deployment
 - **GitHub** – Version control and code hosting
@@ -266,7 +266,7 @@ This project is licensed under the MIT License – see the [LICENSE](LICENSE) fi
 
 ## 🙏 Acknowledgments
 
-- **Groq** – For their incredible Llama 3.3 70B API (lightning fast!)
+- **Groq** – For their incredible, ultra-low latency inference API (lightning fast!)
 - **React** – For making UI development a joy
 - **Vercel** – For making deployment effortless
 - **Web Speech API** – For bringing TTS to the browser
