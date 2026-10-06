@@ -191,14 +191,56 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   }
 }
 
+// ─── DYNAMIC GROQ MODEL DISCOVERY ─────────────────────────────────────────────
+async function fetchActiveGroqModels(apiKey) {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.data || !Array.isArray(data.data)) return null;
+
+    // Filter out audio, whisper, embeddings, moderation, and deprecated models
+    const excluded = ["whisper", "guard", "embed", "moderation", "tts", "stt", "vision", "compound-mini", "llama3-70b", "llama3-8b"];
+    const textModels = data.data
+      .map(m => m.id)
+      .filter(id => id && !excluded.some(ex => id.toLowerCase().includes(ex)));
+
+    const preferred = [
+      "llama-3.3-70b-versatile",
+      "openai/gpt-oss-120b",
+      "llama-3.1-70b-versatile",
+      "llama-3.1-8b-instant",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3.6-27b",
+      "qwen-2.5-32b",
+      "gemma2-9b-it",
+    ];
+
+    const sorted = [
+      ...preferred.filter(m => textModels.includes(m)),
+      ...textModels.filter(m => !preferred.includes(m)),
+    ];
+
+    return sorted.length > 0 ? sorted : null;
+  } catch (e) {
+    console.warn("Dynamic model query failed:", e);
+    return null;
+  }
+}
+
 // ─── GROQ API CALL WITH MODEL FALLBACK & RETRIES ──────────────────────────────
 async function callGroq(apiKey, storyText) {
-  const models = [
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
+  const dynamicModels = await fetchActiveGroqModels(apiKey);
+  const fallbackModels = [
     "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
     "llama-3.1-8b-instant",
+    "openai/gpt-oss-20b",
+    "gemma2-9b-it",
   ];
+  const models = (dynamicModels && dynamicModels.length > 0) ? dynamicModels : fallbackModels;
   let lastError = null;
 
   for (const model of models) {

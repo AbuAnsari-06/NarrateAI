@@ -154,13 +154,32 @@ async def analyze_story(text: str, api_key: str) -> Dict:
     # Initialize Groq client with user's key
     client = Groq(api_key=api_key)
     
-    # Try models in order (current supported Groq models with fallbacks)
-    models = [
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
+    # Preferred ranking of active text models
+    preferred_order = [
         "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "llama-3.1-70b-versatile",
         "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+        "qwen-2.5-32b",
+        "gemma2-9b-it",
     ]
+    models = [
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
+    ]
+    try:
+        models_data = client.models.list().data
+        excluded = ["whisper", "guard", "embed", "moderation", "tts", "stt", "vision", "compound-mini", "llama3-70b", "llama3-8b"]
+        active_ids = [m.id for m in models_data if not any(ex in m.id.lower() for ex in excluded)]
+        if active_ids:
+            models = [m for m in preferred_order if m in active_ids] + [m for m in active_ids if m not in preferred_order]
+    except Exception as e:
+        print(f"Dynamic model query warning: {e}")
+
     last_error = None
     
     for model in models:
