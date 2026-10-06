@@ -231,7 +231,7 @@ function deduplicateSpeakers(parsedLines) {
 }
 
 // ─── INDIVIDUAL GROQ ATTEMPT ──────────────────────────────────────────────────
-async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "", maxTokens = 950) {
+async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "", maxTokens = 4096) {
   const url = "https://api.groq.com/openai/v1/chat/completions";
 
   const userContent = retryPromptSuffix 
@@ -253,7 +253,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30-second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35-second timeout
 
   try {
     const response = await fetch(url, {
@@ -275,7 +275,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
       // Auto-retry if rate limit or token limit specifies an allowed Limit
       if ((errMsg.includes("OTPM") || errMsg.includes("limit") || errMsg.includes("max_tokens") || errMsg.includes("Requested")) && maxTokens > 500) {
         const limitMatch = errMsg.match(/Limit\s+(\d+)/i);
-        const lowerTokens = limitMatch ? Math.min(parseInt(limitMatch[1], 10), maxTokens - 150) : Math.max(maxTokens - 200, 500);
+        const lowerTokens = limitMatch ? Math.min(parseInt(limitMatch[1], 10), 950) : 950;
         console.warn(`Retrying ${model} with reduced max_tokens=${lowerTokens} due to tier limit constraint.`);
         return await callGroqWithModel(apiKey, storyText, model, retryPromptSuffix, lowerTokens);
       }
@@ -286,7 +286,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === "AbortError") {
-      throw new Error(`Timeout after 30 seconds for model ${model}.`);
+      throw new Error(`Timeout after 35 seconds for model ${model}.`);
     }
     throw err;
   }
@@ -308,16 +308,17 @@ async function fetchActiveGroqModels(apiKey) {
       .map(m => m.id)
       .filter(id => id && !excluded.some(ex => id.toLowerCase().includes(ex)));
 
+    // Prioritize high-capacity models first (10,000+ TPM), then Qwen/Gemma
     const preferred = [
       "llama-3.3-70b-versatile",
       "openai/gpt-oss-120b",
       "openai/gpt-oss-20b",
-      "qwen/qwen3.8-27b",
-      "qwen/qwen3.6-27b",
-      "qwen-2.5-32b",
       "llama-3.1-70b-versatile",
       "llama-3.1-8b-instant",
       "gemma2-9b-it",
+      "qwen/qwen3.8-27b",
+      "qwen/qwen3.6-27b",
+      "qwen-2.5-32b",
     ];
 
     const sorted = [
@@ -346,14 +347,16 @@ async function callGroq(apiKey, storyText) {
   let lastError = null;
 
   for (const model of models) {
+    // Qwen models enforce a strict 1000 OTPM cap on free tier; flagship models support full 4096 capacity
+    const defaultTokens = model.toLowerCase().includes("qwen") ? 950 : 4096;
     try {
-      const rawText = await callGroqWithModel(apiKey, storyText, model);
+      const rawText = await callGroqWithModel(apiKey, storyText, model, "", defaultTokens);
       try {
         return cleanAndParseJSON(rawText);
       } catch (parseErr) {
         console.warn(`JSON parsing failed with model ${model}, retrying with correction...`, parseErr);
         const retrySuffix = "IMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes.";
-        const retryRawText = await callGroqWithModel(apiKey, storyText, model, retrySuffix);
+        const retryRawText = await callGroqWithModel(apiKey, storyText, model, retrySuffix, defaultTokens);
         return cleanAndParseJSON(retryRawText);
       }
     } catch (err) {

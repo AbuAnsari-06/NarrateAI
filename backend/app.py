@@ -251,6 +251,7 @@ async def analyze_story(text: str, api_key: str) -> Dict:
     for model in models:
         try:
             # First attempt with original prompt
+            token_limit = 950 if "qwen" in model.lower() else 4096
             create_params = {
                 "model": model,
                 "messages": [
@@ -258,7 +259,7 @@ async def analyze_story(text: str, api_key: str) -> Dict:
                     {"role": "user", "content": f"Analyze this story:\n\n{text}"}
                 ],
                 "temperature": 0.4,
-                "max_tokens": 950,
+                "max_tokens": token_limit,
             }
             if "gpt-oss" in model:
                 create_params["reasoning_format"] = "hidden"
@@ -299,7 +300,7 @@ async def analyze_story(text: str, api_key: str) -> Dict:
                         {"role": "user", "content": f"Analyze this story:\n\n{text}\n\nIMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes."}
                     ],
                     "temperature": 0.4,
-                    "max_tokens": 950,
+                    "max_tokens": token_limit,
                 }
                 if "gpt-oss" in model:
                     retry_params["reasoning_format"] = "hidden"
