@@ -250,6 +250,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
 
   if (model.includes("gpt-oss")) {
     body.reasoning_format = "hidden";
+    body.reasoning_effort = "low";
   }
 
   const controller = new AbortController();
@@ -333,8 +334,108 @@ async function fetchActiveGroqModels(apiKey) {
   }
 }
 
-// ─── GROQ API CALL WITH MODEL FALLBACK & RETRIES ──────────────────────────────
-async function callGroq(apiKey, storyText) {
+// ─── STORY CHUNKING ENGINE FOR UNLIMITED LENGTH STORIES ───────────────────────
+function splitStoryIntoChunks(storyText, targetWords = 320) {
+  if (!storyText || !storyText.trim()) return [];
+
+  const rawParagraphs = storyText.split(/\n+/).map(p => p.trim()).filter(Boolean);
+  if (rawParagraphs.length === 0) return [storyText.trim()];
+
+  const totalWords = storyText.split(/\s+/).filter(Boolean).length;
+  if (totalWords <= 380) {
+    return [storyText.trim()];
+  }
+
+  const chunks = [];
+  let currentChunk = [];
+  let currentWords = 0;
+
+  for (const para of rawParagraphs) {
+    const paraWords = para.split(/\s+/).filter(Boolean).length;
+
+    if (paraWords > targetWords * 1.3) {
+      if (currentChunk.length > 0) {
+        chunks.push(currentChunk.join("\n\n"));
+        currentChunk = [];
+        currentWords = 0;
+      }
+
+      const sentences = para.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [para];
+      let subChunk = [];
+      let subWords = 0;
+
+      for (const sent of sentences) {
+        const sentWords = sent.split(/\s+/).filter(Boolean).length;
+        if (subWords + sentWords > targetWords && subChunk.length > 0) {
+          chunks.push(subChunk.join(" ").trim());
+          subChunk = [sent.trim()];
+          subWords = sentWords;
+        } else {
+          subChunk.push(sent.trim());
+          subWords += sentWords;
+        }
+      }
+
+      if (subChunk.length > 0) {
+        chunks.push(subChunk.join(" ").trim());
+      }
+      continue;
+    }
+
+    if (currentWords + paraWords > targetWords && currentChunk.length > 0) {
+      chunks.push(currentChunk.join("\n\n"));
+      currentChunk = [para];
+      currentWords = paraWords;
+    } else {
+      currentChunk.push(para);
+      currentWords += paraWords;
+    }
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join("\n\n"));
+  }
+
+  return chunks;
+}
+
+// ─── SINGLE CHUNK ANALYZER ───────────────────────────────────────────────────
+async function callGroqSingleChunk(apiKey, chunkText, models, knownCharacters = {}) {
+  let charPrompt = "";
+  const knownKeys = Object.keys(knownCharacters);
+  if (knownKeys.length > 0) {
+    const charList = Object.entries(knownCharacters).map(([name, persona]) => `"${name}" (${persona})`).join(", ");
+    charPrompt = `\n\nALREADY INTRODUCED CHARACTERS: ${charList}. If any of these characters appear or speak, use their EXACT name and persona.`;
+  }
+  const textWithContext = chunkText + charPrompt;
+
+  let lastError = null;
+  for (const model of models) {
+    const defaultTokens = model.toLowerCase().includes("qwen") ? 950 : 4096;
+    try {
+      const rawText = await callGroqWithModel(apiKey, textWithContext, model, "", defaultTokens);
+      try {
+        return cleanAndParseJSON(rawText);
+      } catch (parseErr) {
+        console.warn(`JSON parsing failed with model ${model}, retrying with correction...`, parseErr);
+        const retrySuffix = "IMPORTANT: Return ONLY a valid JSON array. Each element MUST be separated by a comma. No markdown wrapping.";
+        const retryRawText = await callGroqWithModel(apiKey, textWithContext, model, retrySuffix, defaultTokens);
+        return cleanAndParseJSON(retryRawText);
+      }
+    } catch (err) {
+      console.warn(`Groq model ${model} failed for chunk:`, err.message);
+      lastError = err;
+      if (err.message?.includes("Invalid API key") || err.message?.includes("401") || err.message?.includes("invalid_api_key")) {
+        throw err;
+      }
+    }
+  }
+  throw lastError || new Error("Failed to analyze scene chunk.");
+}
+
+// ─── MASTER GROQ CALL WITH AUTOMATIC SCENE CHUNKING ──────────────────────────
+async function callGroq(apiKey, storyText, onProgress) {
+  const chunks = splitStoryIntoChunks(storyText, 320);
   const dynamicModels = await fetchActiveGroqModels(apiKey);
   const fallbackModels = [
     "llama-3.3-70b-versatile",
@@ -344,32 +445,45 @@ async function callGroq(apiKey, storyText) {
     "gemma2-9b-it",
   ];
   const models = (dynamicModels && dynamicModels.length > 0) ? dynamicModels : fallbackModels;
-  let lastError = null;
 
-  for (const model of models) {
-    // Qwen models enforce a strict 1000 OTPM cap on free tier; flagship models support full 4096 capacity
-    const defaultTokens = model.toLowerCase().includes("qwen") ? 950 : 4096;
+  const allLines = [];
+  const knownCharacters = {};
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (onProgress) {
+      onProgress({ current: i + 1, total: chunks.length });
+    }
+
+    if (i > 0) {
+      // Respect Groq rate limits between successive scene chunks
+      await new Promise(r => setTimeout(r, 600));
+    }
+
     try {
-      const rawText = await callGroqWithModel(apiKey, storyText, model, "", defaultTokens);
-      try {
-        return cleanAndParseJSON(rawText);
-      } catch (parseErr) {
-        console.warn(`JSON parsing failed with model ${model}, retrying with correction...`, parseErr);
-        const retrySuffix = "IMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes.";
-        const retryRawText = await callGroqWithModel(apiKey, storyText, model, retrySuffix, defaultTokens);
-        return cleanAndParseJSON(retryRawText);
+      const chunkLines = await callGroqSingleChunk(apiKey, chunks[i], models, knownCharacters);
+      if (Array.isArray(chunkLines) && chunkLines.length > 0) {
+        for (const line of chunkLines) {
+          if (line && typeof line.text === "string" && line.text.trim()) {
+            allLines.push(line);
+            if (line.speaker && line.speaker !== "Narrator" && line.persona) {
+              knownCharacters[line.speaker] = line.persona;
+            }
+          }
+        }
       }
-    } catch (err) {
-      console.warn(`Groq model ${model} failed:`, err.message);
-      lastError = err;
-      
-      if (err.message?.includes("Invalid API key") || err.message?.includes("401") || err.message?.includes("invalid_api_key")) {
-        throw err;
+    } catch (chunkErr) {
+      console.warn(`Chunk ${i + 1} issue:`, chunkErr);
+      if (allLines.length === 0 && i === chunks.length - 1) {
+        throw chunkErr;
       }
     }
   }
-  
-  throw lastError || new Error("All Groq models failed to analyze the story.");
+
+  if (allLines.length === 0) {
+    throw new Error("Unable to analyze story into audio units. Please check your text and try again.");
+  }
+
+  return deduplicateSpeakers(allLines);
 }
 
 // ─── VOICE ASSIGNMENT ENGINE ──────────────────────────────────────────────────
@@ -1171,6 +1285,7 @@ export default function NarrateAI() {
   const [speechSupported]                     = useState(() => typeof window !== "undefined" && "speechSynthesis" in window && !!window.speechSynthesis);
   const [showFinished, setShowFinished]       = useState(false);
   const [loadingStep, setLoadingStep]         = useState("");
+  const [chunkProgress, setChunkProgress]     = useState(null);
   
   const [history, setHistory]                 = useState([]);
   const [showWritingPanel, setShowWritingPanel] = useState(true);
@@ -1375,6 +1490,7 @@ export default function NarrateAI() {
 
     setIsLoading(true);
     setLoadingStep("groq");
+    setChunkProgress(null);
     setError("");
     setParsedLines([]);
     setCharacters([]);
@@ -1382,9 +1498,12 @@ export default function NarrateAI() {
     stopPlayback();
 
     try {
-      const parsed = await callGroq(apiKey.trim(), storyText);
+      const parsed = await callGroq(apiKey.trim(), storyText, (progress) => {
+        setChunkProgress(progress);
+      });
 
       setLoadingStep("parse");
+      setChunkProgress(null);
 
       // ── FILTER OUT EMPTY LINES ──
       const filteredParsed = parsed.filter(line => line && typeof line.text === "string" && line.text.trim() !== "");
@@ -1718,9 +1837,13 @@ export default function NarrateAI() {
                         borderTopColor: "#fff", borderRadius: "50%",
                         animation: "spin 0.7s linear infinite", display: "inline-block"
                       }} />
-                      {loadingStep === "groq" && "Analysing text with AI…"}
-                      {loadingStep === "parse" && "Fuzzying speakers & parsing…"}
-                      {loadingStep === "assign" && "Assigning neural voices…"}
+                      {chunkProgress && chunkProgress.total > 1
+                        ? `Analysing scene ${chunkProgress.current} of ${chunkProgress.total}…`
+                        : loadingStep === "groq"
+                        ? "Analysing text with AI…"
+                        : loadingStep === "parse"
+                        ? "Fuzzying speakers & parsing…"
+                        : "Assigning neural voices…"}
                     </span>
                   ) : "✨ Analyse & Prepare Voices"}
                 </button>

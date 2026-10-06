@@ -212,31 +212,55 @@ def deduplicate_speakers(parsed_lines: List[Dict]) -> List[Dict]:
     
     return result
 
+def split_story_into_chunks(story_text: str, target_words: int = 320) -> List[str]:
+    """Split text into manageable scene chunks by paragraphs and sentences"""
+    if not story_text or not story_text.strip():
+        return []
+
+    raw_paragraphs = [p.strip() for p in story_text.split('\n') if p.strip()]
+    if not raw_paragraphs:
+        return [story_text.strip()]
+
+    total_words = len(story_text.split())
+    if total_words <= 380:
+        return [story_text.strip()]
+
+    chunks = []
+    current_chunk = []
+    current_words = 0
+
+    for para in raw_paragraphs:
+        para_words = len(para.split())
+        if current_words + para_words > target_words and current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+            current_chunk = [para]
+            current_words = para_words
+        else:
+            current_chunk.append(para)
+            current_words += para_words
+
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    return chunks
+
 # --- Main Analysis Function ---
 async def analyze_story(text: str, api_key: str) -> Dict:
-    """Core story analysis using Groq with user-provided key"""
-    
-    # Initialize Groq client with user's key
+    """Core story analysis using Groq with automatic scene chunking"""
     client = Groq(api_key=api_key)
     
-    # Preferred ranking of active text models
     preferred_order = [
         "llama-3.3-70b-versatile",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b",
-        "qwen/qwen3.6-27b",
-        "qwen-2.5-32b",
         "llama-3.1-70b-versatile",
         "llama-3.1-8b-instant",
         "gemma2-9b-it",
+        "qwen/qwen3.8-27b",
+        "qwen/qwen3.6-27b",
+        "qwen-2.5-32b",
     ]
-    models = [
-        "llama-3.3-70b-versatile",
-        "openai/gpt-oss-120b",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-20b",
-    ]
+    models = preferred_order
     try:
         models_data = client.models.list().data
         excluded = ["whisper", "guard", "embed", "moderation", "tts", "stt", "vision", "compound-mini", "llama3-70b", "llama3-8b"]
@@ -246,17 +270,27 @@ async def analyze_story(text: str, api_key: str) -> Dict:
     except Exception as e:
         print(f"Dynamic model query warning: {e}")
 
-    last_error = None
-    
-    for model in models:
-        try:
-            # First attempt with original prompt
+    chunks = split_story_into_chunks(text, 320)
+    all_lines = []
+    known_characters = {}
+
+    for i, chunk in enumerate(chunks):
+        chunk_parsed = None
+        char_prompt = ""
+        if known_characters:
+            char_list = ", ".join([f'"{k}" ({v})' for k, v in known_characters.items()])
+            char_prompt = f"\n\nALREADY INTRODUCED CHARACTERS: {char_list}. If any of these characters appear, use their exact name and persona."
+
+        chunk_text = chunk + char_prompt
+        last_error = None
+
+        for model in models:
             token_limit = 950 if "qwen" in model.lower() else 4096
             create_params = {
                 "model": model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Analyze this story:\n\n{text}"}
+                    {"role": "user", "content": f"Analyze this story:\n\n{chunk_text}"}
                 ],
                 "temperature": 0.4,
                 "max_tokens": token_limit,
@@ -264,79 +298,43 @@ async def analyze_story(text: str, api_key: str) -> Dict:
             if "gpt-oss" in model:
                 create_params["reasoning_format"] = "hidden"
 
-            completion = client.chat.completions.create(**create_params)
-            
-            raw_text = completion.choices[0].message.content
-            
-            # Try to parse JSON
             try:
+                completion = client.chat.completions.create(**create_params)
+                raw_text = completion.choices[0].message.content
                 parsed = clean_and_parse_json(raw_text)
                 if isinstance(parsed, list) and len(parsed) > 0:
-                    parsed = [line for line in parsed if line.get('text', '').strip()]
-                    
-                    if len(parsed) > 0:
-                        parsed = deduplicate_speakers(parsed)
-                        
-                        char_map = {}
-                        for line in parsed:
-                            speaker = line.get('speaker', 'Narrator')
-                            if speaker not in char_map:
-                                char_map[speaker] = line.get('persona', '')
-                        
-                        characters = [{'speaker': k, 'persona': v} for k, v in char_map.items()]
-                        
-                        return {
-                            'lines': parsed,
-                            'characters': characters
-                        }
-            except (json.JSONDecodeError, ValueError) as parse_err:
-                print(f"Parse error with {model}: {parse_err}")
-                
-                # Retry with correction prompt
-                retry_params = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Analyze this story:\n\n{text}\n\nIMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes."}
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": token_limit,
-                }
-                if "gpt-oss" in model:
-                    retry_params["reasoning_format"] = "hidden"
+                    chunk_parsed = [line for line in parsed if line.get('text', '').strip()]
+                    break
+            except Exception as e:
+                print(f"Model {model} failed on chunk {i + 1}: {e}")
+                last_error = e
+                if "invalid_api_key" in str(e).lower() or "401" in str(e):
+                    raise Exception("Invalid Groq API key. Please check your key at console.groq.com/keys")
 
-                retry_completion = client.chat.completions.create(**retry_params)
-                
-                retry_raw = retry_completion.choices[0].message.content
-                parsed = clean_and_parse_json(retry_raw)
-                
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    parsed = [line for line in parsed if line.get('text', '').strip()]
-                    parsed = deduplicate_speakers(parsed)
-                    
-                    char_map = {}
-                    for line in parsed:
-                        speaker = line.get('speaker', 'Narrator')
-                        if speaker not in char_map:
-                            char_map[speaker] = line.get('persona', '')
-                    
-                    characters = [{'speaker': k, 'persona': v} for k, v in char_map.items()]
-                    
-                    return {
-                        'lines': parsed,
-                        'characters': characters
-                    }
-                    
-        except Exception as e:
-            print(f"Model {model} failed: {e}")
-            last_error = e
-            
-            # Check for invalid API key
-            if "invalid_api_key" in str(e).lower() or "401" in str(e):
-                raise Exception("Invalid Groq API key. Please check your key at console.groq.com/keys")
-            continue
-    
-    raise Exception(f"All models failed: {last_error}")
+        if chunk_parsed:
+            for line in chunk_parsed:
+                all_lines.append(line)
+                spk = line.get('speaker', 'Narrator')
+                if spk != 'Narrator' and line.get('persona'):
+                    known_characters[spk] = line.get('persona')
+        elif not all_lines and i == len(chunks) - 1:
+            raise Exception(f"Failed to analyze story: {last_error}")
+
+    if not all_lines:
+        raise Exception("The AI did not extract any readable narrative lines from your story.")
+
+    all_lines = deduplicate_speakers(all_lines)
+    char_map = {}
+    for line in all_lines:
+        spk = line.get('speaker', 'Narrator')
+        if spk not in char_map:
+            char_map[spk] = line.get('persona', '')
+
+    characters = [{'speaker': k, 'persona': v} for k, v in char_map.items()]
+    return {
+        'lines': all_lines,
+        'characters': characters
+    }
 
 # --- API Endpoints ---
 @app.get("/")
