@@ -150,7 +150,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   const body = {
     model: model,
     temperature: 0.4,
-    max_tokens: 8192,
+    max_tokens: 4096,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user",   content: userContent },
