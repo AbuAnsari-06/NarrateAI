@@ -88,21 +88,112 @@ OUTPUT FORMAT:
   }
 ]`;
 
-// ─── HELPER FOR ROBUST JSON EXTRACTION ────────────────────────────────────────
+// ─── HELPER FOR INDESTRUCTIBLE ROBUST JSON EXTRACTION ────────────────────────
 function cleanAndParseJSON(rawText) {
-  let cleaned = rawText.trim();
-  
-  // 1. Strip markdown fences if present
-  cleaned = cleaned.replace(/```json|```/g, "").trim();
-  
-  // 2. Find first [ and last ] to extract JSON array
-  const startIdx = cleaned.indexOf("[");
-  const endIdx = cleaned.lastIndexOf("]");
-  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    cleaned = cleaned.substring(startIdx, endIdx + 1);
+  if (!rawText || typeof rawText !== "string") {
+    throw new Error("Empty response received from AI model.");
   }
-  
-  return JSON.parse(cleaned);
+
+  let cleaned = rawText.trim();
+
+  // 1. Strip markdown code fences (```json ... ``` or ``` ...)
+  cleaned = cleaned.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+
+  // 2. Direct fast-path parse
+  try {
+    const direct = JSON.parse(cleaned);
+    if (Array.isArray(direct)) return direct;
+    if (direct && typeof direct === "object") {
+      for (const k of ["lines", "dialogue", "story", "output", "data"]) {
+        if (Array.isArray(direct[k])) return direct[k];
+      }
+      return [direct];
+    }
+  } catch {
+    // Proceed to auto-repair
+  }
+
+  // 3. Extract the primary JSON segment
+  const firstBracket = cleaned.indexOf("[");
+  const firstBrace = cleaned.indexOf("{");
+
+  let rootType = "array";
+  let startIdx = firstBracket;
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    rootType = "object";
+    startIdx = firstBrace;
+  }
+
+  if (startIdx !== -1) {
+    cleaned = cleaned.substring(startIdx);
+  }
+
+  // 4. Auto-repair missing commas between objects: } \s* {  -->  }, {
+  cleaned = cleaned.replace(/\}\s*(?=\{)/g, "},");
+
+  // 5. Auto-repair missing commas between array elements: ] \s* [  -->  ], [
+  cleaned = cleaned.replace(/\]\s*(?=\[)/g, "],");
+
+  // 6. Strip invalid trailing commas before closing braces/brackets
+  cleaned = cleaned.replace(/,\s*([\]\}])/g, "$1");
+
+  // 7. Auto-repair truncated output (e.g., token limit cutoff)
+  if (rootType === "array") {
+    const lastBracket = cleaned.lastIndexOf("]");
+    if (lastBracket !== -1) {
+      cleaned = cleaned.substring(0, lastBracket + 1);
+    } else {
+      const lastBrace = cleaned.lastIndexOf("}");
+      if (lastBrace !== -1) {
+        cleaned = cleaned.substring(0, lastBrace + 1) + "\n]";
+      } else {
+        cleaned = cleaned + "\n]";
+      }
+    }
+  } else {
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (lastBrace !== -1) {
+      cleaned = cleaned.substring(0, lastBrace + 1);
+    } else {
+      cleaned = cleaned + "\n}";
+    }
+  }
+
+  // 8. Try parsing again after syntactic normalization
+  try {
+    const repaired = JSON.parse(cleaned);
+    if (Array.isArray(repaired)) return repaired;
+    if (repaired && typeof repaired === "object") {
+      for (const k of ["lines", "dialogue", "story", "output", "data"]) {
+        if (Array.isArray(repaired[k])) return repaired[k];
+      }
+      return [repaired];
+    }
+  } catch {
+    // 9. Aggressive object-by-object salvage as ultimate safety net
+    const objectRegex = /\{[\s\S]*?\}(?=\s*[,\]\}]|\s*\{|\s*$)/g;
+    const matches = cleaned.match(objectRegex);
+    if (matches && matches.length > 0) {
+      const recovered = [];
+      for (const m of matches) {
+        try {
+          const fixedObj = m.replace(/,\s*\}/g, "}");
+          const obj = JSON.parse(fixedObj);
+          if (obj && (obj.text || obj.speaker)) {
+            recovered.push(obj);
+          }
+        } catch {
+          // ignore corrupted single unit
+        }
+      }
+      if (recovered.length > 0) {
+        return recovered;
+      }
+    }
+  }
+
+  // If all automated repairs failed, throw with actionable message
+  throw new Error("Unable to parse AI story analysis. The AI returned an unparseable response.");
 }
 
 // ─── FUZZY SPEAKER DEDUPLICATION ──────────────────────────────────────────────

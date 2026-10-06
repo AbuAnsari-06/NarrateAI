@@ -93,29 +93,94 @@ OUTPUT FORMAT:
 
 # --- Helper Functions ---
 def clean_and_parse_json(raw_text: str) -> List[Dict]:
-    """Extract and parse JSON from LLM response"""
+    """Extract and robustly parse JSON from LLM response with multi-stage auto-repair"""
+    if not raw_text or not isinstance(raw_text, str):
+        raise ValueError("Empty response received from AI model.")
+
     cleaned = raw_text.strip()
-    
-    # Strip markdown fences
-    cleaned = re.sub(r'```json|```', '', cleaned).strip()
-    
-    # Find first [ and last ] to extract JSON array
-    start_idx = cleaned.find('[')
-    end_idx = cleaned.rfind(']')
-    
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-        cleaned = cleaned[start_idx:end_idx + 1]
-    
+    # 1. Strip markdown fences
+    cleaned = re.sub(r'```(?:json)?', '', cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace('```', '').strip()
+
+    # 2. Direct fast-path parse
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        # Try to fix common issues
-        cleaned = re.sub(r',\s*}', '}', cleaned)
-        cleaned = re.sub(r',\s*]', ']', cleaned)
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for k in ['lines', 'dialogue', 'story', 'output', 'data']:
+                if k in data and isinstance(data[k], list):
+                    return data[k]
+            return [data]
+    except Exception:
+        pass
+
+    # 3. Extract JSON start
+    first_bracket = cleaned.find('[')
+    first_brace = cleaned.find('{')
+    root_type = "array"
+    start_idx = first_bracket
+    if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        root_type = "object"
+        start_idx = first_brace
+
+    if start_idx != -1:
+        cleaned = cleaned[start_idx:]
+
+    # 4. Fix missing commas between objects: } \s* { -> }, {
+    cleaned = re.sub(r'\}\s*(?=\{)', '},', cleaned)
+    cleaned = re.sub(r'\]\s*(?=\[)', '],', cleaned)
+
+    # 5. Fix trailing commas
+    cleaned = re.sub(r',\s*([\]\}])', r'\1', cleaned)
+
+    # 6. Handle truncated output
+    if root_type == "array":
+        last_bracket = cleaned.rfind(']')
+        if last_bracket != -1:
+            cleaned = cleaned[:last_bracket + 1]
+        else:
+            last_brace = cleaned.rfind('}')
+            if last_brace != -1:
+                cleaned = cleaned[:last_brace + 1] + "\n]"
+            else:
+                cleaned = cleaned + "\n]"
+    else:
+        last_brace = cleaned.rfind('}')
+        if last_brace != -1:
+            cleaned = cleaned[:last_brace + 1]
+        else:
+            cleaned = cleaned + "\n}"
+
+    # 7. Try parse after syntactic repair
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for k in ['lines', 'dialogue', 'story', 'output', 'data']:
+                if k in data and isinstance(data[k], list):
+                    return data[k]
+            return [data]
+    except Exception:
+        pass
+
+    # 8. Individual object regex salvage
+    object_matches = re.findall(r'\{[^{}]*\}', cleaned)
+    recovered = []
+    for m in object_matches:
         try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            raise ValueError(f"Failed to parse JSON: {e}")
+            fixed = re.sub(r',\s*\}', '}', m)
+            obj = json.loads(fixed)
+            if isinstance(obj, dict) and ('text' in obj or 'speaker' in obj):
+                recovered.append(obj)
+        except Exception:
+            continue
+
+    if recovered:
+        return recovered
+
+    raise ValueError("Unable to parse AI story analysis. The AI returned an unparseable response.")
 
 def deduplicate_speakers(parsed_lines: List[Dict]) -> List[Dict]:
     """Fuzzy deduplicate speaker names"""
