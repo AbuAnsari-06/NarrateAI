@@ -158,11 +158,12 @@ async def analyze_story(text: str, api_key: str) -> Dict:
     preferred_order = [
         "llama-3.3-70b-versatile",
         "openai/gpt-oss-120b",
-        "llama-3.1-70b-versatile",
-        "llama-3.1-8b-instant",
         "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
         "qwen/qwen3.6-27b",
         "qwen-2.5-32b",
+        "llama-3.1-70b-versatile",
+        "llama-3.1-8b-instant",
         "gemma2-9b-it",
     ]
     models = [
@@ -192,7 +193,7 @@ async def analyze_story(text: str, api_key: str) -> Dict:
                     {"role": "user", "content": f"Analyze this story:\n\n{text}"}
                 ],
                 "temperature": 0.4,
-                "max_tokens": 4096,
+                "max_tokens": 950,
             }
             if "gpt-oss" in model:
                 create_params["reasoning_format"] = "hidden"
@@ -233,7 +234,7 @@ async def analyze_story(text: str, api_key: str) -> Dict:
                         {"role": "user", "content": f"Analyze this story:\n\n{text}\n\nIMPORTANT: Your previous output was not valid JSON. Please return ONLY a valid, parseable JSON array and nothing else. No markdown wrapping, no notes."}
                     ],
                     "temperature": 0.4,
-                    "max_tokens": 4096,
+                    "max_tokens": 950,
                 }
                 if "gpt-oss" in model:
                     retry_params["reasoning_format"] = "hidden"

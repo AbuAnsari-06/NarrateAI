@@ -140,7 +140,7 @@ function deduplicateSpeakers(parsedLines) {
 }
 
 // ─── INDIVIDUAL GROQ ATTEMPT ──────────────────────────────────────────────────
-async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "") {
+async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "", maxTokens = 950) {
   const url = "https://api.groq.com/openai/v1/chat/completions";
 
   const userContent = retryPromptSuffix 
@@ -150,7 +150,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   const body = {
     model: model,
     temperature: 0.4,
-    max_tokens: 4096,
+    max_tokens: maxTokens,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user",   content: userContent },
@@ -179,7 +179,17 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
 
     const data = await response.json();
 
-    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    if (data.error) {
+      const errMsg = data.error.message || JSON.stringify(data.error);
+      // Auto-retry if rate limit or token limit specifies an allowed Limit
+      if ((errMsg.includes("OTPM") || errMsg.includes("limit") || errMsg.includes("max_tokens") || errMsg.includes("Requested")) && maxTokens > 500) {
+        const limitMatch = errMsg.match(/Limit\s+(\d+)/i);
+        const lowerTokens = limitMatch ? Math.min(parseInt(limitMatch[1], 10), maxTokens - 150) : Math.max(maxTokens - 200, 500);
+        console.warn(`Retrying ${model} with reduced max_tokens=${lowerTokens} due to tier limit constraint.`);
+        return await callGroqWithModel(apiKey, storyText, model, retryPromptSuffix, lowerTokens);
+      }
+      throw new Error(errMsg);
+    }
 
     return data.choices?.[0]?.message?.content || "";
   } catch (err) {
@@ -210,11 +220,12 @@ async function fetchActiveGroqModels(apiKey) {
     const preferred = [
       "llama-3.3-70b-versatile",
       "openai/gpt-oss-120b",
-      "llama-3.1-70b-versatile",
-      "llama-3.1-8b-instant",
       "openai/gpt-oss-20b",
+      "qwen/qwen3.8-27b",
       "qwen/qwen3.6-27b",
       "qwen-2.5-32b",
+      "llama-3.1-70b-versatile",
+      "llama-3.1-8b-instant",
       "gemma2-9b-it",
     ];
 
