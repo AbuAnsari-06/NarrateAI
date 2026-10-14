@@ -88,7 +88,9 @@ OUTPUT FORMAT:
   }
 ]`;
 
-// ─── HELPER FOR INDESTRUCTIBLE ROBUST JSON EXTRACTION ────────────────────────
+const NARRATION_WORDS_PER_MINUTE = 140;
+
+// ─── HELPER FOR ROBUST JSON EXTRACTION ────────────────────────────────────────
 function cleanAndParseJSON(rawText) {
   if (!rawText || typeof rawText !== "string") {
     throw new Error("Empty response received from AI model.");
@@ -196,6 +198,25 @@ function cleanAndParseJSON(rawText) {
   throw new Error("Unable to parse AI story analysis. The AI returned an unparseable response.");
 }
 
+function formatNarrationDuration(wordCount) {
+  if (!wordCount) return "0 sec";
+
+  const totalSeconds = Math.ceil((wordCount / NARRATION_WORDS_PER_MINUTE) * 60);
+  if (totalSeconds < 60) return `${totalSeconds} sec`;
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    if (minutes > 0) return `${hours} hr ${minutes} min`;
+    return `${hours} hr`;
+  }
+
+  if (seconds > 0) return `${minutes} min ${seconds} sec`;
+  return `${minutes} min`;
+}
+
 // ─── FUZZY SPEAKER DEDUPLICATION ──────────────────────────────────────────────
 function deduplicateSpeakers(parsedLines) {
   const speakers = Array.from(new Set(parsedLines.map(l => l.speaker))).filter(s => s !== "Narrator");
@@ -212,7 +233,7 @@ function deduplicateSpeakers(parsedLines) {
       const words1 = name1.split(/\s+/).filter(w => !["mr", "mrs", "ms", "lord", "lady", "sir"].includes(w));
       const words2 = name2.split(/\s+/).filter(w => !["mr", "mrs", "ms", "lord", "lady", "sir"].includes(w));
       
-      const hasOverlap = words1.some(w => words2.includes(w) && w.length > 2); // only match overlaps of significant length
+      const hasOverlap = words1.some(w => words2.includes(w) && w.length > 2);
       
       if (name1.includes(name2) || name2.includes(name1) || hasOverlap) {
         const primary = s1.length <= s2.length ? s1 : s2;
@@ -232,7 +253,7 @@ function deduplicateSpeakers(parsedLines) {
 
 // ─── INDIVIDUAL GROQ ATTEMPT ──────────────────────────────────────────────────
 async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "", maxTokens = 4096) {
-  const url = "https://api.groq.com/openai/v1/chat/completions";
+  const url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)";
 
   const userContent = retryPromptSuffix 
     ? `Analyze this story:\n\n${storyText}\n\n${retryPromptSuffix}`
@@ -254,7 +275,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35-second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
 
   try {
     const response = await fetch(url, {
@@ -273,7 +294,6 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
 
     if (data.error) {
       const errMsg = data.error.message || JSON.stringify(data.error);
-      // Auto-retry if rate limit or token limit specifies an allowed Limit
       if ((errMsg.includes("OTPM") || errMsg.includes("limit") || errMsg.includes("max_tokens") || errMsg.includes("Requested")) && maxTokens > 500) {
         const limitMatch = errMsg.match(/Limit\s+(\d+)/i);
         const lowerTokens = limitMatch ? Math.min(parseInt(limitMatch[1], 10), 950) : 950;
@@ -296,20 +316,18 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
 // ─── DYNAMIC GROQ MODEL DISCOVERY ─────────────────────────────────────────────
 async function fetchActiveGroqModels(apiKey) {
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/models", {
+    const res = await fetch("[https://api.groq.com/openai/v1/models](https://api.groq.com/openai/v1/models)", {
       headers: { "Authorization": `Bearer ${apiKey}` },
     });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data?.data || !Array.isArray(data.data)) return null;
 
-    // Filter out audio, whisper, embeddings, moderation, and deprecated models
     const excluded = ["whisper", "guard", "embed", "moderation", "tts", "stt", "vision", "compound-mini", "llama3-70b", "llama3-8b"];
     const textModels = data.data
       .map(m => m.id)
       .filter(id => id && !excluded.some(ex => id.toLowerCase().includes(ex)));
 
-    // Prioritize high-capacity models first (10,000+ TPM), then Qwen/Gemma
     const preferred = [
       "llama-3.3-70b-versatile",
       "openai/gpt-oss-120b",
@@ -455,7 +473,6 @@ async function callGroq(apiKey, storyText, onProgress) {
     }
 
     if (i > 0) {
-      // Respect Groq rate limits between successive scene chunks
       await new Promise(r => setTimeout(r, 600));
     }
 
@@ -489,10 +506,10 @@ async function callGroq(apiKey, storyText, onProgress) {
 // ─── VOICE ASSIGNMENT ENGINE ──────────────────────────────────────────────────
 function classifyPersona(persona = "") {
   const p = persona.toLowerCase();
-  const isFemale  = FEMALE_HINTS.some(h => p.includes(h));
-  const isMale    = MALE_HINTS.some(h => p.includes(h));
-  const isOld     = OLD_HINTS.some(h => p.includes(h));
-  const isYoung   = YOUNG_HINTS.some(h => p.includes(h));
+  const isFemale = FEMALE_HINTS.some(h => p.includes(h));
+  const isMale   = MALE_HINTS.some(h => p.includes(h));
+  const isOld    = OLD_HINTS.some(h => p.includes(h));
+  const isYoung  = YOUNG_HINTS.some(h => p.includes(h));
   return { isFemale, isMale, isOld, isYoung };
 }
 
@@ -511,20 +528,16 @@ function scoreVoice(voice, traits) {
   const name = (voice.name + " " + voice.lang).toLowerCase();
   let score = 0;
 
-  // ── QUALITY: strongly prefer Neural / Natural / Online voices ──
-  // These are Edge's high-quality human-sounding voices
   if (name.includes("natural"))          score += 50;
   if (name.includes("neural"))           score += 40;
-  if (name.includes("online (natural)")) score += 60; // Edge neural voices
+  if (name.includes("online (natural)")) score += 60;
   if (name.includes("online"))           score += 30;
 
-  // ── LANGUAGE: prefer English ──
   if (voice.lang.startsWith("en")) score += 10;
   if (voice.lang === "en-US")      score += 5;
   if (voice.lang === "en-GB")      score += 3;
   if (voice.lang === "en-AU")      score += 2;
 
-  // ── GENDER: match persona hints ──
   const femaleNameHints = ["female","woman","fiona","samantha","karen","victoria","moira","tessa","veena","zira","susan","emily","heather","hazel","ava","allison","kate","serena","nicky","aria","jenny","michelle","monica","sonia","libby","maisie","clara","natasha","isabelle"];
   const maleNameHints   = ["male","man","daniel","alex","fred","lee","rishi","tom","thomas","arthur","oliver","george","aaron","james","gordon","bruce","junior","guy","ryan","brian","andrew","eric","jacob","jason","tony","william","elliot","liam","noah"];
   const looksLikeFemale = femaleNameHints.some(h => name.includes(h));
@@ -563,10 +576,8 @@ function resolveSpeechVoice(assignedVoiceData, voicePool) {
 }
 
 function assignVoices(characters, availableVoices) {
-  // Filter out problematic voices first
   const safeVoices = availableVoices.filter(v => !isProblematicVoice(v));
   
-  // Prefer high-quality English voices; fall back to all safe voices
   const qualityPool = safeVoices.filter(v => {
     const name = v.name.toLowerCase();
     return v.lang.startsWith("en") && 
@@ -578,10 +589,9 @@ function assignVoices(characters, availableVoices) {
   
   if (pool.length === 0) return {};
 
-  const assignments  = {};
-  const usedNames    = new Set();
+  const assignments = {};
+  const usedNames   = new Set();
 
-  // Sort: Narrator first, then characters in detection order
   const sorted = [...characters].sort((a, b) =>
     a.speaker === "Narrator" ? -1 : b.speaker === "Narrator" ? 1 : 0
   );
@@ -589,7 +599,6 @@ function assignVoices(characters, availableVoices) {
   for (const char of sorted) {
     const traits = classifyPersona(char.persona);
 
-    // Score every voice; penalise already-used ones heavily
     const scored = pool
       .map(v => ({
         voice: v,
@@ -597,7 +606,6 @@ function assignVoices(characters, availableVoices) {
       }))
       .sort((a, b) => b.score - a.score);
 
-    // Pick the best voice that hasn't been used yet
     const pick = scored.find(s => !usedNames.has(s.voice.name)) || scored[0];
     assignments[char.speaker] = pick.voice;
     usedNames.add(pick.voice.name);
@@ -781,7 +789,6 @@ const S = {
 };
 
 // ─── COMPONENTS ──────────────────────────────────────────────────────────────
-
 function ApiKeyPanel({ apiKey, onKeyChange }) {
   const [show, setShow] = useState(false);
   return (
@@ -818,9 +825,9 @@ function ApiKeyPanel({ apiKey, onKeyChange }) {
       {!apiKey && (
         <div style={{ fontSize: "12px", color: "#64748b", marginTop: "8px", lineHeight: 1.6 }}>
           Get a free API key →{" "}
-          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer"
+          <a href="[https://console.groq.com/keys](https://console.groq.com/keys)" target="_blank" rel="noreferrer"
             style={{ color: "#6366f1", textDecoration: "none", fontWeight: 600 }}>
-            console.groq.com/keys
+            [console.groq.com/keys](https://console.groq.com/keys)
           </a>
           {" "}— no credit card needed. Very generous free limits.
         </div>
@@ -868,7 +875,7 @@ function VoiceQualityBanner({ availableVoices }) {
     v.name.toLowerCase().includes("online")
   );
 
-  if (hasNatural) return null; // Already using good voices, no need to show banner
+  if (hasNatural) return null;
 
   return (
     <div style={{
@@ -882,13 +889,13 @@ function VoiceQualityBanner({ availableVoices }) {
         <div style={{ fontSize: "13px", fontWeight: 700, color: "#fbbf24", marginBottom: "4px" }}>
           Upgrade to human-sounding voices — free!
         </div>
-        <div style={{ fontSize: "12px", color: "#92400e", lineHeight: 1.6, color: "#d97706" }}>
+        <div style={{ fontSize: "12px", lineHeight: 1.6, color: "#d97706" }}>
           Open this app in <strong>Microsoft Edge</strong> to unlock Neural voices like
           <em> Microsoft Aria, Guy, Jenny</em> — they sound genuinely human.
           Edge is free and already on your Windows PC.
         </div>
         <a
-          href="microsoft-edge:https://narrate-ai-gamma.vercel.app/"
+          href="microsoft-edge:[https://narrate-ai-gamma.vercel.app/](https://narrate-ai-gamma.vercel.app/)"
           style={{
             display: "inline-block", marginTop: "8px",
             padding: "6px 14px", borderRadius: "8px",
@@ -915,7 +922,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
     <div style={{ marginBottom: "20px" }}>
       <span style={S.label}>🎭 Voices Panel</span>
       
-      {/* Expanded Character Detail Card */}
       {expandedChar && (
         <div style={{
           marginBottom: "20px",
@@ -928,7 +934,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              {/* Character Name Header */}
               <div style={{
                 display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px"
               }}>
@@ -943,7 +948,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 </h3>
               </div>
               
-              {/* Character Description from Story - full persona text without truncation */}
               <p style={{
                 fontSize: "14px", lineHeight: 1.9, color: "#cbd5e1", margin: 0,
                 marginBottom: "16px",
@@ -954,7 +958,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 {expandedChar.persona || "A mysterious character in this story."}
               </p>
 
-              {/* Voice Assignment - only shown when expanded */}
               <div style={{
                 fontSize: "12px", color: "#94a3b8", marginTop: "14px",
                 padding: "12px 14px", background: "rgba(99,102,241,0.08)", borderRadius: "10px",
@@ -965,7 +968,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
               </div>
             </div>
             
-            {/* Close Button */}
             <button
               onClick={() => setExpandedChar(null)}
               style={{
@@ -990,7 +992,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
         </div>
       )}
 
-      {/* Character Cards Grid - Simple, Clean */}
       <div style={{
         display: "flex",
         gap: "12px",
@@ -1040,7 +1041,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 }
               }}
             >
-              {/* Character Dot - animated on state changes */}
               <div style={{
                 width: isExpanded ? "12px" : "8px",
                 height: isExpanded ? "12px" : "8px",
@@ -1051,7 +1051,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 transition: "all 0.3s",
               }} />
               
-              {/* Character Name - only content shown */}
               <div style={{
                 fontSize: isExpanded ? "14px" : "13px",
                 fontWeight: 700,
@@ -1123,6 +1122,7 @@ function HistoryPanel({ history, onLoadItem, onClear }) {
     </div>
   );
 }
+
 function StoryLine({ line, isActive, colorMap, onClick }) {
   const ref = useRef(null);
   const color = colorMap[line.speaker] || NARRATOR_COLOR;
@@ -1169,6 +1169,7 @@ function StoryLine({ line, isActive, colorMap, onClick }) {
     </div>
   );
 }
+
 function PlaybackControls({ isPlaying, currentIndex, total, onPlay, onPause, onStop, onPrev, onNext, speed, onSpeedChange, disabled }) {
   const progress = total > 0 ? ((currentIndex + 1) / total) * 100 : 0;
   return (
@@ -1269,25 +1270,25 @@ function PlaybackControls({ isPlaying, currentIndex, total, onPlay, onPause, onS
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function NarrateAI() {
-  const [apiKey, setApiKey]                   = useState("");
-  const [storyText, setStoryText]             = useState("");
-  const [parsedLines, setParsedLines]         = useState([]);
-  const [characters, setCharacters]           = useState([]);
-  const [colorMap, setColorMap]               = useState({});
+  const [apiKey, setApiKey]                     = useState("");
+  const [storyText, setStoryText]               = useState("");
+  const [parsedLines, setParsedLines]           = useState([]);
+  const [characters, setCharacters]             = useState([]);
+  const [colorMap, setColorMap]                 = useState({});
   const [voiceAssignments, setVoiceAssignments] = useState({});
   const [availableVoices, setAvailableVoices]   = useState([]);
-  const [isLoading, setIsLoading]             = useState(false);
-  const [isPlaying, setIsPlaying]             = useState(false);
-  const [currentIndex, setCurrentIndex]       = useState(0);
-  const [error, setError]                     = useState("");
-  const [speed, setSpeed]                     = useState(1.0);
-  const [view, setView]                       = useState("input");
-  const [speechSupported]                     = useState(() => typeof window !== "undefined" && "speechSynthesis" in window && !!window.speechSynthesis);
-  const [showFinished, setShowFinished]       = useState(false);
-  const [loadingStep, setLoadingStep]         = useState("");
-  const [chunkProgress, setChunkProgress]     = useState(null);
+  const [isLoading, setIsLoading]               = useState(false);
+  const [isPlaying, setIsPlaying]               = useState(false);
+  const [currentIndex, setCurrentIndex]         = useState(0);
+  const [error, setError]                       = useState("");
+  const [speed, setSpeed]                       = useState(1.0);
+  const [view, setView]                         = useState("input");
+  const [speechSupported]                       = useState(() => typeof window !== "undefined" && "speechSynthesis" in window && !!window.speechSynthesis);
+  const [showFinished, setShowFinished]         = useState(false);
+  const [loadingStep, setLoadingStep]           = useState("");
+  const [chunkProgress, setChunkProgress]       = useState(null);
   
-  const [history, setHistory]                 = useState([]);
+  const [history, setHistory]                   = useState([]);
   const [showWritingPanel, setShowWritingPanel] = useState(true);
   const [showPlaybackPanel, setShowPlaybackPanel] = useState(true);
   
@@ -1326,14 +1327,14 @@ export default function NarrateAI() {
     }
   }, []);
 
-  const synthRef   = useRef(typeof window !== "undefined" ? window.speechSynthesis : null);
+  const synthRef            = useRef(typeof window !== "undefined" ? window.speechSynthesis : null);
   const watchdogIntervalRef = useRef(null);
-  const indexRef   = useRef(0);
-  const playingRef = useRef(false);
-  const speedRef   = useRef(1.0);
-  const linesRef   = useRef([]);
-  const voiceRef   = useRef({});
-  const generationRef = useRef(0);
+  const indexRef            = useRef(0);
+  const playingRef          = useRef(false);
+  const speedRef            = useRef(1.0);
+  const linesRef            = useRef([]);
+  const voiceRef            = useRef({});
+  const generationRef       = useRef(0);
 
   // Persist API key to localStorage
   useEffect(() => {
@@ -1480,7 +1481,6 @@ export default function NarrateAI() {
       return;
     }
 
-    // ── MINIMUM LENGTH CHECK ──
     const wordCount = storyText.trim().split(/\s+/).filter(Boolean).length;
     const sentenceCount = storyText.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
     if (wordCount < 10 || sentenceCount < 3) {
@@ -1505,10 +1505,7 @@ export default function NarrateAI() {
       setLoadingStep("parse");
       setChunkProgress(null);
 
-      // ── FILTER OUT EMPTY LINES ──
       const filteredParsed = parsed.filter(line => line && typeof line.text === "string" && line.text.trim() !== "");
-
-      // ── FUZZY SPEAKER DEDUPLICATION ──
       const dedupedParsed = deduplicateSpeakers(filteredParsed);
 
       if (dedupedParsed.length === 0) {
@@ -1536,7 +1533,6 @@ export default function NarrateAI() {
       indexRef.current = 0;
       setView("story");
 
-      // Save to localStorage
       localStorage.setItem("narrateai_story_text", storyText);
       localStorage.setItem("narrateai_parsed_lines", JSON.stringify(dedupedParsed));
       localStorage.setItem("narrateai_characters", JSON.stringify(chars));
@@ -1548,13 +1544,12 @@ export default function NarrateAI() {
       }
       localStorage.setItem("narrateai_voice_assignments", JSON.stringify(serialized));
 
-      // Save to history tray
       saveStoryToHistory(storyText, dedupedParsed, chars, cMap, serialized);
 
     } catch (err) {
       console.error(err);
       if (err.message?.includes("Invalid API Key") || err.message?.includes("401") || err.message?.includes("invalid_api_key")) {
-        setError("Invalid API key. Please double-check your Groq API key at console.groq.com/keys");
+        setError("Invalid API key. Please double-check your Groq API key at [console.groq.com/keys](https://console.groq.com/keys)");
       } else {
         setError(`Analysis failed: ${err.message || "Please check your story and try again."}`);
       }
@@ -1570,7 +1565,6 @@ export default function NarrateAI() {
     const voices = voiceRef.current;
     const generation = generationRef.current;
 
-    // Clear any active watchdog timer before starting
     if (watchdogIntervalRef.current) {
       clearInterval(watchdogIntervalRef.current);
       watchdogIntervalRef.current = null;
@@ -1691,7 +1685,6 @@ export default function NarrateAI() {
     }
   }
 
-  // Go to previous line
   function skipBackward() {
     if (currentIndex > 0) {
       const prevIdx = currentIndex - 1;
@@ -1702,6 +1695,7 @@ export default function NarrateAI() {
       }
     }
   }
+
   function handleSpeedChange(val) {
     setSpeed(val);
     speedRef.current = val;
@@ -1714,6 +1708,9 @@ export default function NarrateAI() {
 
   const hasStory = parsedLines.length > 0;
   const canAnalyze = !!apiKey.trim() && !!storyText.trim() && !isLoading;
+  const storyWordCount = storyText.trim() ? storyText.trim().split(/\s+/).filter(Boolean).length : 0;
+  const storyCharacterCount = storyText.length;
+  const estimatedNarrationDuration = formatNarrationDuration(storyWordCount);
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
@@ -1810,7 +1807,7 @@ export default function NarrateAI() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
                   <label style={{ ...S.label, marginBottom: 0 }}>Your Story</label>
                   <span style={{ fontSize: "11px", color: "#64748b" }}>
-                    {storyText ? `${storyText.trim().split(/\s+/).filter(Boolean).length} words · est. ${Math.ceil(storyText.trim().split(/\s+/).filter(Boolean).length / 150)} min narration` : "0 words"}
+                    {`${storyWordCount} words · ${storyCharacterCount} characters · est. ${estimatedNarrationDuration}`}
                   </span>
                 </div>
                 <textarea
@@ -1882,7 +1879,6 @@ export default function NarrateAI() {
 
                   <VoiceQualityBanner availableVoices={availableVoices} />
                   
-                  {/* Celebration finished card */}
                   {showFinished && (
                     <div style={{
                       background: "linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(139,92,246,0.15) 100%)",
