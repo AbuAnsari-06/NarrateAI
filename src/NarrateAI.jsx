@@ -90,6 +90,13 @@ OUTPUT FORMAT:
 
 const NARRATION_WORDS_PER_MINUTE = 140;
 
+const KEYBOARD_SHORTCUTS = [
+  { keys: "Space", action: "Play / Pause" },
+  { keys: "R", action: "Reset" },
+  { keys: "Left Arrow", action: "Previous Line" },
+  { keys: "Right Arrow", action: "Next Line" },
+];
+
 // ─── HELPER FOR ROBUST JSON EXTRACTION ────────────────────────────────────────
 function cleanAndParseJSON(rawText) {
   if (!rawText || typeof rawText !== "string") {
@@ -1291,6 +1298,11 @@ export default function NarrateAI() {
   const [history, setHistory]                   = useState([]);
   const [showWritingPanel, setShowWritingPanel] = useState(true);
   const [showPlaybackPanel, setShowPlaybackPanel] = useState(true);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+  const helpButtonRef = useRef(null);
+  const helpDialogRef = useRef(null);
+  const previousFocusRef = useRef(null);
   
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1401,13 +1413,95 @@ export default function NarrateAI() {
     };
   }, []);
 
+  const openShortcutsHelp = useCallback(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setIsHelpOpen(true);
+  }, []);
+
+  const closeShortcutsHelp = useCallback(() => {
+    setIsHelpOpen(false);
+    requestAnimationFrame(() => {
+      if (previousFocusRef.current?.isConnected) {
+        previousFocusRef.current.focus();
+      } else {
+        helpButtonRef.current?.focus();
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isHelpOpen) return;
+    const dialog = helpDialogRef.current;
+    if (!dialog) return;
+
+    const focusable = dialog.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+    (focusable[0] || dialog).focus();
+  }, [isHelpOpen]);
+
+  useEffect(() => {
+    if (!isHelpOpen) return;
+
+    function handleTabLock(event) {
+      if (event.key !== "Tab") return;
+      const dialog = helpDialogRef.current;
+      if (!dialog) return;
+
+      const focusable = dialog.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      if (!dialog.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && (activeElement === first || activeElement === dialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleTabLock);
+    return () => window.removeEventListener("keydown", handleTabLock);
+  }, [isHelpOpen]);
+
   // Keyboard controls
   useEffect(() => {
     function handleKeyDown(e) {
-      if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA") {
+      if (isHelpOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeShortcutsHelp();
+        }
         return;
       }
-      
+
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const activeElement = document.activeElement;
+      const isEditable = element => element instanceof HTMLElement && (
+        element.tagName === "INPUT" ||
+        element.tagName === "TEXTAREA" ||
+        element.tagName === "SELECT" ||
+        element.isContentEditable
+      );
+
+      if (isEditable(target) || isEditable(activeElement)) {
+        return;
+      }
+
+      if (e.key === "?") {
+        e.preventDefault();
+        openShortcutsHelp();
+        return;
+      }
+
       if (e.code === "Space") {
         e.preventDefault();
         if (playingRef.current) {
@@ -1426,10 +1520,10 @@ export default function NarrateAI() {
         skipBackward();
       }
     }
-    
+
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentIndex, parsedLines]);
+  }, [isHelpOpen, currentIndex, parsedLines, closeShortcutsHelp, openShortcutsHelp]);
 
   // Load browser voices
   useEffect(() => {
@@ -1761,6 +1855,28 @@ export default function NarrateAI() {
           </div>
         )}
 
+        <button
+          ref={helpButtonRef}
+          type="button"
+          onClick={openShortcutsHelp}
+          aria-label="Show keyboard shortcuts"
+          title="Show keyboard shortcuts"
+          style={{
+            width: "34px",
+            height: "34px",
+            borderRadius: "8px",
+            border: "1px solid rgba(129,140,248,0.5)",
+            background: "rgba(99,102,241,0.15)",
+            color: "#c7d2fe",
+            fontSize: "17px",
+            fontWeight: 800,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          ?
+        </button>
+
         <div style={{ fontSize: "12px", color: "#475569", fontWeight: 500 }}>
           {hasStory ? `${parsedLines.length} lines · ${characters.length} chars` : ""}
         </div>
@@ -1961,6 +2077,93 @@ export default function NarrateAI() {
           onSpeedChange={handleSpeedChange}
           disabled={isLoading}
         />
+      )}
+
+      {isHelpOpen && (
+        <div
+          onClick={closeShortcutsHelp}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            background: "rgba(2,6,23,0.78)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <section
+            ref={helpDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="keyboard-shortcuts-title"
+            aria-describedby="keyboard-shortcuts-description"
+            tabIndex={-1}
+            onClick={event => event.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "480px",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "24px",
+              border: "1px solid rgba(129,140,248,0.4)",
+              borderRadius: "16px",
+              background: "#111827",
+              color: "#e2e8f0",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              outline: "none",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}>
+              <h2 id="keyboard-shortcuts-title" style={{ margin: 0, fontSize: "21px", color: "#f8fafc" }}>
+                Keyboard shortcuts
+              </h2>
+              <button
+                type="button"
+                onClick={closeShortcutsHelp}
+                aria-label="Close keyboard shortcuts"
+                title="Close keyboard shortcuts"
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: "8px",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#e2e8f0",
+                  fontSize: "18px",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <p id="keyboard-shortcuts-description" style={{ margin: "12px 0 20px", color: "#a8b3c7", fontSize: "14px", lineHeight: 1.6 }}>
+              Available keyboard shortcuts:
+            </p>
+            <dl style={{ display: "grid", gap: "12px", margin: 0 }}>
+              {KEYBOARD_SHORTCUTS.map(shortcut => (
+                <div key={shortcut.keys} style={{ display: "grid", gridTemplateColumns: "minmax(112px, auto) 1fr", gap: "16px" }}>
+                  <dt style={{ margin: 0 }}>
+                    <kbd style={{
+                      display: "inline-block",
+                      padding: "6px 9px",
+                      border: "1px solid rgba(165,180,252,0.4)",
+                      borderRadius: "6px",
+                      background: "rgba(99,102,241,0.16)",
+                      color: "#e0e7ff",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}>{shortcut.keys}</kbd>
+                  </dt>
+                  <dd style={{ margin: "5px 0 0", color: "#e2e8f0", fontSize: "14px" }}>{shortcut.action}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </div>
       )}
 
       {/* Styles & Animation keyframes */}
