@@ -88,7 +88,17 @@ OUTPUT FORMAT:
   }
 ]`;
 
+const NARRATION_WORDS_PER_MINUTE = 140;
+
+const KEYBOARD_SHORTCUTS = [
+  { keys: "Space", action: "Play / Pause" },
+  { keys: "R", action: "Reset" },
+  { keys: "Left Arrow", action: "Previous Line" },
+  { keys: "Right Arrow", action: "Next Line" },
+];
+
 // ─── HELPER FOR INDESTRUCTIBLE ROBUST JSON EXTRACTION ────────────────────────
+
 function cleanAndParseJSON(rawText) {
   if (!rawText || typeof rawText !== "string") {
     throw new Error("Empty response received from AI model.");
@@ -135,7 +145,7 @@ function cleanAndParseJSON(rawText) {
   cleaned = cleaned.replace(/\]\s*(?=\[)/g, "],");
 
   // 6. Strip invalid trailing commas before closing braces/brackets
-  cleaned = cleaned.replace(/,\s*([\]\}])/g, "$1");
+  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
 
   // 7. Auto-repair truncated output (e.g., token limit cutoff)
   if (rootType === "array") {
@@ -171,7 +181,7 @@ function cleanAndParseJSON(rawText) {
     }
   } catch {
     // 9. Aggressive object-by-object salvage as ultimate safety net
-    const objectRegex = /\{[\s\S]*?\}(?=\s*[,\]\}]|\s*\{|\s*$)/g;
+    const objectRegex = /\{[\s\S]*?\}(?=\s*[,\]}]|\s*\{|\s*$)/g;
     const matches = cleaned.match(objectRegex);
     if (matches && matches.length > 0) {
       const recovered = [];
@@ -196,6 +206,25 @@ function cleanAndParseJSON(rawText) {
   throw new Error("Unable to parse AI story analysis. The AI returned an unparseable response.");
 }
 
+function formatNarrationDuration(wordCount) {
+  if (!wordCount) return "0 sec";
+
+  const totalSeconds = Math.ceil((wordCount / NARRATION_WORDS_PER_MINUTE) * 60);
+  if (totalSeconds < 60) return `${totalSeconds} sec`;
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    if (minutes > 0) return `${hours} hr ${minutes} min`;
+    return `${hours} hr`;
+  }
+
+  if (seconds > 0) return `${minutes} min ${seconds} sec`;
+  return `${minutes} min`;
+}
+
 // ─── FUZZY SPEAKER DEDUPLICATION ──────────────────────────────────────────────
 function deduplicateSpeakers(parsedLines) {
   const speakers = Array.from(new Set(parsedLines.map(l => l.speaker))).filter(s => s !== "Narrator");
@@ -212,7 +241,7 @@ function deduplicateSpeakers(parsedLines) {
       const words1 = name1.split(/\s+/).filter(w => !["mr", "mrs", "ms", "lord", "lady", "sir"].includes(w));
       const words2 = name2.split(/\s+/).filter(w => !["mr", "mrs", "ms", "lord", "lady", "sir"].includes(w));
       
-      const hasOverlap = words1.some(w => words2.includes(w) && w.length > 2); // only match overlaps of significant length
+      const hasOverlap = words1.some(w => words2.includes(w) && w.length > 2);
       
       if (name1.includes(name2) || name2.includes(name1) || hasOverlap) {
         const primary = s1.length <= s2.length ? s1 : s2;
@@ -287,7 +316,7 @@ async function callGroqWithModel(apiKey, storyText, model, retryPromptSuffix = "
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === "AbortError") {
-      throw new Error(`Timeout after 35 seconds for model ${model}.`);
+      throw new Error(`Timeout after 35 seconds for model ${model}.`, { cause: err });
     }
     throw err;
   }
@@ -489,10 +518,10 @@ async function callGroq(apiKey, storyText, onProgress) {
 // ─── VOICE ASSIGNMENT ENGINE ──────────────────────────────────────────────────
 function classifyPersona(persona = "") {
   const p = persona.toLowerCase();
-  const isFemale  = FEMALE_HINTS.some(h => p.includes(h));
-  const isMale    = MALE_HINTS.some(h => p.includes(h));
-  const isOld     = OLD_HINTS.some(h => p.includes(h));
-  const isYoung   = YOUNG_HINTS.some(h => p.includes(h));
+  const isFemale = FEMALE_HINTS.some(h => p.includes(h));
+  const isMale   = MALE_HINTS.some(h => p.includes(h));
+  const isOld    = OLD_HINTS.some(h => p.includes(h));
+  const isYoung  = YOUNG_HINTS.some(h => p.includes(h));
   return { isFemale, isMale, isOld, isYoung };
 }
 
@@ -511,20 +540,16 @@ function scoreVoice(voice, traits) {
   const name = (voice.name + " " + voice.lang).toLowerCase();
   let score = 0;
 
-  // ── QUALITY: strongly prefer Neural / Natural / Online voices ──
-  // These are Edge's high-quality human-sounding voices
   if (name.includes("natural"))          score += 50;
   if (name.includes("neural"))           score += 40;
-  if (name.includes("online (natural)")) score += 60; // Edge neural voices
+  if (name.includes("online (natural)")) score += 60;
   if (name.includes("online"))           score += 30;
 
-  // ── LANGUAGE: prefer English ──
   if (voice.lang.startsWith("en")) score += 10;
   if (voice.lang === "en-US")      score += 5;
   if (voice.lang === "en-GB")      score += 3;
   if (voice.lang === "en-AU")      score += 2;
 
-  // ── GENDER: match persona hints ──
   const femaleNameHints = ["female","woman","fiona","samantha","karen","victoria","moira","tessa","veena","zira","susan","emily","heather","hazel","ava","allison","kate","serena","nicky","aria","jenny","michelle","monica","sonia","libby","maisie","clara","natasha","isabelle"];
   const maleNameHints   = ["male","man","daniel","alex","fred","lee","rishi","tom","thomas","arthur","oliver","george","aaron","james","gordon","bruce","junior","guy","ryan","brian","andrew","eric","jacob","jason","tony","william","elliot","liam","noah"];
   const looksLikeFemale = femaleNameHints.some(h => name.includes(h));
@@ -563,10 +588,8 @@ function resolveSpeechVoice(assignedVoiceData, voicePool) {
 }
 
 function assignVoices(characters, availableVoices) {
-  // Filter out problematic voices first
   const safeVoices = availableVoices.filter(v => !isProblematicVoice(v));
   
-  // Prefer high-quality English voices; fall back to all safe voices
   const qualityPool = safeVoices.filter(v => {
     const name = v.name.toLowerCase();
     return v.lang.startsWith("en") && 
@@ -578,10 +601,9 @@ function assignVoices(characters, availableVoices) {
   
   if (pool.length === 0) return {};
 
-  const assignments  = {};
-  const usedNames    = new Set();
+  const assignments = {};
+  const usedNames   = new Set();
 
-  // Sort: Narrator first, then characters in detection order
   const sorted = [...characters].sort((a, b) =>
     a.speaker === "Narrator" ? -1 : b.speaker === "Narrator" ? 1 : 0
   );
@@ -589,7 +611,6 @@ function assignVoices(characters, availableVoices) {
   for (const char of sorted) {
     const traits = classifyPersona(char.persona);
 
-    // Score every voice; penalise already-used ones heavily
     const scored = pool
       .map(v => ({
         voice: v,
@@ -597,7 +618,6 @@ function assignVoices(characters, availableVoices) {
       }))
       .sort((a, b) => b.score - a.score);
 
-    // Pick the best voice that hasn't been used yet
     const pick = scored.find(s => !usedNames.has(s.voice.name)) || scored[0];
     assignments[char.speaker] = pick.voice;
     usedNames.add(pick.voice.name);
@@ -781,7 +801,6 @@ const S = {
 };
 
 // ─── COMPONENTS ──────────────────────────────────────────────────────────────
-
 function ApiKeyPanel({ apiKey, onKeyChange }) {
   const [show, setShow] = useState(false);
   return (
@@ -868,7 +887,7 @@ function VoiceQualityBanner({ availableVoices }) {
     v.name.toLowerCase().includes("online")
   );
 
-  if (hasNatural) return null; // Already using good voices, no need to show banner
+  if (hasNatural) return null;
 
   return (
     <div style={{
@@ -882,7 +901,7 @@ function VoiceQualityBanner({ availableVoices }) {
         <div style={{ fontSize: "13px", fontWeight: 700, color: "#fbbf24", marginBottom: "4px" }}>
           Upgrade to human-sounding voices — free!
         </div>
-        <div style={{ fontSize: "12px", color: "#92400e", lineHeight: 1.6, color: "#d97706" }}>
+        <div style={{ fontSize: "12px", lineHeight: 1.6, color: "#d97706" }}>
           Open this app in <strong>Microsoft Edge</strong> to unlock Neural voices like
           <em> Microsoft Aria, Guy, Jenny</em> — they sound genuinely human.
           Edge is free and already on your Windows PC.
@@ -915,7 +934,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
     <div style={{ marginBottom: "20px" }}>
       <span style={S.label}>🎭 Voices Panel</span>
       
-      {/* Expanded Character Detail Card */}
       {expandedChar && (
         <div style={{
           marginBottom: "20px",
@@ -928,7 +946,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              {/* Character Name Header */}
               <div style={{
                 display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px"
               }}>
@@ -943,7 +960,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 </h3>
               </div>
               
-              {/* Character Description from Story - full persona text without truncation */}
               <p style={{
                 fontSize: "14px", lineHeight: 1.9, color: "#cbd5e1", margin: 0,
                 marginBottom: "16px",
@@ -954,7 +970,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 {expandedChar.persona || "A mysterious character in this story."}
               </p>
 
-              {/* Voice Assignment - only shown when expanded */}
               <div style={{
                 fontSize: "12px", color: "#94a3b8", marginTop: "14px",
                 padding: "12px 14px", background: "rgba(99,102,241,0.08)", borderRadius: "10px",
@@ -965,7 +980,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
               </div>
             </div>
             
-            {/* Close Button */}
             <button
               onClick={() => setExpandedChar(null)}
               style={{
@@ -990,7 +1004,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
         </div>
       )}
 
-      {/* Character Cards Grid - Simple, Clean */}
       <div style={{
         display: "flex",
         gap: "12px",
@@ -1040,7 +1053,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 }
               }}
             >
-              {/* Character Dot - animated on state changes */}
               <div style={{
                 width: isExpanded ? "12px" : "8px",
                 height: isExpanded ? "12px" : "8px",
@@ -1051,7 +1063,6 @@ function CharacterPanel({ characters, colorMap, voiceAssignments }) {
                 transition: "all 0.3s",
               }} />
               
-              {/* Character Name - only content shown */}
               <div style={{
                 fontSize: isExpanded ? "14px" : "13px",
                 fontWeight: 700,
@@ -1123,6 +1134,7 @@ function HistoryPanel({ history, onLoadItem, onClear }) {
     </div>
   );
 }
+
 function StoryLine({ line, isActive, colorMap, onClick }) {
   const ref = useRef(null);
   const color = colorMap[line.speaker] || NARRATOR_COLOR;
@@ -1169,6 +1181,7 @@ function StoryLine({ line, isActive, colorMap, onClick }) {
     </div>
   );
 }
+
 function PlaybackControls({ isPlaying, currentIndex, total, onPlay, onPause, onStop, onPrev, onNext, speed, onSpeedChange, disabled }) {
   const progress = total > 0 ? ((currentIndex + 1) / total) * 100 : 0;
   return (
@@ -1269,27 +1282,32 @@ function PlaybackControls({ isPlaying, currentIndex, total, onPlay, onPause, onS
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function NarrateAI() {
-  const [apiKey, setApiKey]                   = useState("");
-  const [storyText, setStoryText]             = useState("");
-  const [parsedLines, setParsedLines]         = useState([]);
-  const [characters, setCharacters]           = useState([]);
-  const [colorMap, setColorMap]               = useState({});
+  const [apiKey, setApiKey]                     = useState("");
+  const [storyText, setStoryText]               = useState("");
+  const [parsedLines, setParsedLines]           = useState([]);
+  const [characters, setCharacters]             = useState([]);
+  const [colorMap, setColorMap]                 = useState({});
   const [voiceAssignments, setVoiceAssignments] = useState({});
   const [availableVoices, setAvailableVoices]   = useState([]);
-  const [isLoading, setIsLoading]             = useState(false);
-  const [isPlaying, setIsPlaying]             = useState(false);
-  const [currentIndex, setCurrentIndex]       = useState(0);
-  const [error, setError]                     = useState("");
-  const [speed, setSpeed]                     = useState(1.0);
-  const [view, setView]                       = useState("input");
-  const [speechSupported]                     = useState(() => typeof window !== "undefined" && "speechSynthesis" in window && !!window.speechSynthesis);
-  const [showFinished, setShowFinished]       = useState(false);
-  const [loadingStep, setLoadingStep]         = useState("");
-  const [chunkProgress, setChunkProgress]     = useState(null);
+  const [isLoading, setIsLoading]               = useState(false);
+  const [isPlaying, setIsPlaying]               = useState(false);
+  const [currentIndex, setCurrentIndex]         = useState(0);
+  const [error, setError]                       = useState("");
+  const [speed, setSpeed]                       = useState(1.0);
+  const [view, setView]                         = useState("input");
+  const [speechSupported]                       = useState(() => typeof window !== "undefined" && "speechSynthesis" in window && !!window.speechSynthesis);
+  const [showFinished, setShowFinished]         = useState(false);
+  const [loadingStep, setLoadingStep]           = useState("");
+  const [chunkProgress, setChunkProgress]       = useState(null);
   
-  const [history, setHistory]                 = useState([]);
+  const [history, setHistory]                   = useState([]);
   const [showWritingPanel, setShowWritingPanel] = useState(true);
   const [showPlaybackPanel, setShowPlaybackPanel] = useState(true);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+  const helpButtonRef = useRef(null);
+  const helpDialogRef = useRef(null);
+  const previousFocusRef = useRef(null);
   
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1326,14 +1344,14 @@ export default function NarrateAI() {
     }
   }, []);
 
-  const synthRef   = useRef(typeof window !== "undefined" ? window.speechSynthesis : null);
+  const synthRef            = useRef(typeof window !== "undefined" ? window.speechSynthesis : null);
   const watchdogIntervalRef = useRef(null);
-  const indexRef   = useRef(0);
-  const playingRef = useRef(false);
-  const speedRef   = useRef(1.0);
-  const linesRef   = useRef([]);
-  const voiceRef   = useRef({});
-  const generationRef = useRef(0);
+  const indexRef            = useRef(0);
+  const playingRef          = useRef(false);
+  const speedRef            = useRef(1.0);
+  const linesRef            = useRef([]);
+  const voiceRef            = useRef({});
+  const generationRef       = useRef(0);
 
   // Persist API key to localStorage
   useEffect(() => {
@@ -1400,13 +1418,95 @@ export default function NarrateAI() {
     };
   }, []);
 
+  const openShortcutsHelp = useCallback(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setIsHelpOpen(true);
+  }, []);
+
+  const closeShortcutsHelp = useCallback(() => {
+    setIsHelpOpen(false);
+    requestAnimationFrame(() => {
+      if (previousFocusRef.current?.isConnected) {
+        previousFocusRef.current.focus();
+      } else {
+        helpButtonRef.current?.focus();
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isHelpOpen) return;
+    const dialog = helpDialogRef.current;
+    if (!dialog) return;
+
+    const focusable = dialog.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+    (focusable[0] || dialog).focus();
+  }, [isHelpOpen]);
+
+  useEffect(() => {
+    if (!isHelpOpen) return;
+
+    function handleTabLock(event) {
+      if (event.key !== "Tab") return;
+      const dialog = helpDialogRef.current;
+      if (!dialog) return;
+
+      const focusable = dialog.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      if (!dialog.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && (activeElement === first || activeElement === dialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleTabLock);
+    return () => window.removeEventListener("keydown", handleTabLock);
+  }, [isHelpOpen]);
+
   // Keyboard controls
   useEffect(() => {
     function handleKeyDown(e) {
-      if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA") {
+      if (isHelpOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeShortcutsHelp();
+        }
         return;
       }
-      
+
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const activeElement = document.activeElement;
+      const isEditable = element => element instanceof HTMLElement && (
+        element.tagName === "INPUT" ||
+        element.tagName === "TEXTAREA" ||
+        element.tagName === "SELECT" ||
+        element.isContentEditable
+      );
+
+      if (isEditable(target) || isEditable(activeElement)) {
+        return;
+      }
+
+      if (e.key === "?") {
+        e.preventDefault();
+        openShortcutsHelp();
+        return;
+      }
+
       if (e.code === "Space") {
         e.preventDefault();
         if (playingRef.current) {
@@ -1425,10 +1525,10 @@ export default function NarrateAI() {
         skipBackward();
       }
     }
-    
+
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentIndex, parsedLines]);
+  }, [isHelpOpen, currentIndex, parsedLines, closeShortcutsHelp, openShortcutsHelp]);
 
   // Load browser voices
   useEffect(() => {
@@ -1480,7 +1580,6 @@ export default function NarrateAI() {
       return;
     }
 
-    // ── MINIMUM LENGTH CHECK ──
     const wordCount = storyText.trim().split(/\s+/).filter(Boolean).length;
     const sentenceCount = storyText.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
     if (wordCount < 10 || sentenceCount < 3) {
@@ -1505,10 +1604,7 @@ export default function NarrateAI() {
       setLoadingStep("parse");
       setChunkProgress(null);
 
-      // ── FILTER OUT EMPTY LINES ──
       const filteredParsed = parsed.filter(line => line && typeof line.text === "string" && line.text.trim() !== "");
-
-      // ── FUZZY SPEAKER DEDUPLICATION ──
       const dedupedParsed = deduplicateSpeakers(filteredParsed);
 
       if (dedupedParsed.length === 0) {
@@ -1536,7 +1632,6 @@ export default function NarrateAI() {
       indexRef.current = 0;
       setView("story");
 
-      // Save to localStorage
       localStorage.setItem("narrateai_story_text", storyText);
       localStorage.setItem("narrateai_parsed_lines", JSON.stringify(dedupedParsed));
       localStorage.setItem("narrateai_characters", JSON.stringify(chars));
@@ -1548,7 +1643,6 @@ export default function NarrateAI() {
       }
       localStorage.setItem("narrateai_voice_assignments", JSON.stringify(serialized));
 
-      // Save to history tray
       saveStoryToHistory(storyText, dedupedParsed, chars, cMap, serialized);
 
     } catch (err) {
@@ -1570,7 +1664,6 @@ export default function NarrateAI() {
     const voices = voiceRef.current;
     const generation = generationRef.current;
 
-    // Clear any active watchdog timer before starting
     if (watchdogIntervalRef.current) {
       clearInterval(watchdogIntervalRef.current);
       watchdogIntervalRef.current = null;
@@ -1691,7 +1784,6 @@ export default function NarrateAI() {
     }
   }
 
-  // Go to previous line
   function skipBackward() {
     if (currentIndex > 0) {
       const prevIdx = currentIndex - 1;
@@ -1702,6 +1794,7 @@ export default function NarrateAI() {
       }
     }
   }
+
   function handleSpeedChange(val) {
     setSpeed(val);
     speedRef.current = val;
@@ -1714,6 +1807,9 @@ export default function NarrateAI() {
 
   const hasStory = parsedLines.length > 0;
   const canAnalyze = !!apiKey.trim() && !!storyText.trim() && !isLoading;
+  const storyWordCount = storyText.trim() ? storyText.trim().split(/\s+/).filter(Boolean).length : 0;
+  const storyCharacterCount = storyText.length;
+  const estimatedNarrationDuration = formatNarrationDuration(storyWordCount);
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
@@ -1764,6 +1860,28 @@ export default function NarrateAI() {
           </div>
         )}
 
+        <button
+          ref={helpButtonRef}
+          type="button"
+          onClick={openShortcutsHelp}
+          aria-label="Show keyboard shortcuts"
+          title="Show keyboard shortcuts"
+          style={{
+            width: "34px",
+            height: "34px",
+            borderRadius: "8px",
+            border: "1px solid rgba(129,140,248,0.5)",
+            background: "rgba(99,102,241,0.15)",
+            color: "#c7d2fe",
+            fontSize: "17px",
+            fontWeight: 800,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          ?
+        </button>
+
         <div style={{ fontSize: "12px", color: "#475569", fontWeight: 500 }}>
           {hasStory ? `${parsedLines.length} lines · ${characters.length} chars` : ""}
         </div>
@@ -1810,7 +1928,7 @@ export default function NarrateAI() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
                   <label style={{ ...S.label, marginBottom: 0 }}>Your Story</label>
                   <span style={{ fontSize: "11px", color: "#64748b" }}>
-                    {storyText ? `${storyText.trim().split(/\s+/).filter(Boolean).length} words · est. ${Math.ceil(storyText.trim().split(/\s+/).filter(Boolean).length / 150)} min narration` : "0 words"}
+                    {`${storyWordCount} words · ${storyCharacterCount} characters · est. ${estimatedNarrationDuration}`}
                   </span>
                 </div>
                 <textarea
@@ -1882,7 +2000,6 @@ export default function NarrateAI() {
 
                   <VoiceQualityBanner availableVoices={availableVoices} />
                   
-                  {/* Celebration finished card */}
                   {showFinished && (
                     <div style={{
                       background: "linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(139,92,246,0.15) 100%)",
@@ -1965,6 +2082,93 @@ export default function NarrateAI() {
           onSpeedChange={handleSpeedChange}
           disabled={isLoading}
         />
+      )}
+
+      {isHelpOpen && (
+        <div
+          onClick={closeShortcutsHelp}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            background: "rgba(2,6,23,0.78)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <section
+            ref={helpDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="keyboard-shortcuts-title"
+            aria-describedby="keyboard-shortcuts-description"
+            tabIndex={-1}
+            onClick={event => event.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "480px",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "24px",
+              border: "1px solid rgba(129,140,248,0.4)",
+              borderRadius: "16px",
+              background: "#111827",
+              color: "#e2e8f0",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              outline: "none",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}>
+              <h2 id="keyboard-shortcuts-title" style={{ margin: 0, fontSize: "21px", color: "#f8fafc" }}>
+                Keyboard shortcuts
+              </h2>
+              <button
+                type="button"
+                onClick={closeShortcutsHelp}
+                aria-label="Close keyboard shortcuts"
+                title="Close keyboard shortcuts"
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: "8px",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#e2e8f0",
+                  fontSize: "18px",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <p id="keyboard-shortcuts-description" style={{ margin: "12px 0 20px", color: "#a8b3c7", fontSize: "14px", lineHeight: 1.6 }}>
+              Available keyboard shortcuts:
+            </p>
+            <dl style={{ display: "grid", gap: "12px", margin: 0 }}>
+              {KEYBOARD_SHORTCUTS.map(shortcut => (
+                <div key={shortcut.keys} style={{ display: "grid", gridTemplateColumns: "minmax(112px, auto) 1fr", gap: "16px" }}>
+                  <dt style={{ margin: 0 }}>
+                    <kbd style={{
+                      display: "inline-block",
+                      padding: "6px 9px",
+                      border: "1px solid rgba(165,180,252,0.4)",
+                      borderRadius: "6px",
+                      background: "rgba(99,102,241,0.16)",
+                      color: "#e0e7ff",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}>{shortcut.keys}</kbd>
+                  </dt>
+                  <dd style={{ margin: "5px 0 0", color: "#e2e8f0", fontSize: "14px" }}>{shortcut.action}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </div>
       )}
 
       {/* Styles & Animation keyframes */}
