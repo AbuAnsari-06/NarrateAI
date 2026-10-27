@@ -1349,8 +1349,23 @@ function PlaybackControls({ isPlaying, currentIndex, total, onPlay, onPause, onS
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function getTextFromUrlHash() {
+  if (typeof window === "undefined") return "";
+  const match = window.location.hash.match(/^#text=([\s\S]*)$/);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
 export default function NarrateAI() {
-  const [initialState] = useState(getStoredNarrateAIState);
+  const [initialState] = useState(() => {
+    const stored = getStoredNarrateAIState();
+    const sharedText = getTextFromUrlHash();
+    if (!sharedText) return stored;
+    return { ...stored, storyText: sharedText, view: "input" };
+  });
   const [apiKey, setApiKey]                     = useState(() => initialState.apiKey);
   const [storyText, setStoryText]               = useState(() => initialState.storyText);
   const [parsedLines, setParsedLines]           = useState(() => initialState.parsedLines);
