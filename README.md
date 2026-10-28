@@ -266,10 +266,24 @@ This project is licensed under the MIT License – see the [LICENSE](LICENSE) fi
 
 ## 🙏 Acknowledgments
 
-- **Groq** – For their incredible, ultra-low latency inference API (lightning fast!)
+- **Groq** – For ultra-low latency Llama 3.3 70B & inference API
 - **React** – For making UI development a joy
 - **Vercel** – For making deployment effortless
 - **Web Speech API** – For bringing TTS to the browser
+- **GDGOC PSIT** – For hosting the Hacktoberfest open-source celebration
+- All our student and open-source contributors!
+
+---
+
+## 🧩 Chrome Extension
+
+NarrateAI includes a Manifest V3 Chrome extension that lets you narrate any highlighted text on a webpage.
+
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Click **Load unpacked** and select the `extension/` folder.
+3. Highlight text on any page, right-click, and choose **Narrate with NarrateAI**.
+
+See [extension/README.md](extension/README.md) for details.
 
 ---
 
